@@ -1,0 +1,28 @@
+# Environment files (never commit local paths or credentials)
+.env
+.env.local
+.env.*.local
+
+# Credentials & keys
+*.pem
+*.key
+
+# Build outputs & workspace-local caches (keep directory placeholders)
+/build/*
+!/build/.gitkeep
+/.cache/*
+!/.cache/.gitkeep
+
+# Dependencies & compiler/editor artifacts
+__pycache__/
+*.py[cod]
+node_modules/
+*.tsbuildinfo
+*.log
+.DS_Store
+Thumbs.db
+
+# Sub-mods (each managed in its own independent Git repo, except _template)
+/mods/*
+!/mods/_template/
+

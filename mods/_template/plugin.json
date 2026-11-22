@@ -1,0 +1,27 @@
+{
+  "schema": "fus.session-plugin.v1",
+  "host_api": 1,
+  "scope": "session",
+  "id": "template_mod",
+  "version": "0.1.0",
+  "name": "Template Mod",
+  "description": "基于 Fu vtt 防腐层 SDK 构建的会话导入插件模板。",
+  "entry": "entry.gd",
+  "import_extensions": ["fusdemo"],
+  "import_action_label": "导入示例场景文件",
+  "settings": [
+    {
+      "id": "proxy",
+      "type": "string",
+      "label": "图片下载代理",
+      "placeholder": "留空使用系统网络，或填写 http://127.0.0.1:7890",
+      "default": ""
+    },
+    {
+      "id": "include_hidden",
+      "type": "bool",
+      "label": "包含源文件中的隐藏图层与物件",
+      "default": true
+    }
+  ]
+}
