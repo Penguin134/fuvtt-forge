@@ -32,9 +32,11 @@
 - **外部官方源码仓只读与双线防混淆铁律**：仅允许以纯只读方式（如 `git -C <FUS_REPO_DIR> show <ref>:<path>`）核对契约，**严禁对 `<FUS_REPO_DIR>` 执行任何文件写入、删除或 `git checkout`**；生产插件、SDK 与脚手架 100% 锚定现役 `Practice` 主线（`origin/codex/fuvtt-project-sync` / Steam 客户端，`fus.session-plugin.v1`），严禁将已替代的早期 `FUS-F2` 原型分支（`f2.feature_plugin.v1`）契约混用于生产交付。
 - **凭证与权限边界**：严禁读取、打印或提交任何 Steam 账号信息、发布令牌或私人存档；需要访问工作区外部路径时，必须遵守沙箱边界与用户显式授权。
 - **跨包依赖隔离**：`mods/<mod-a>/` 禁止直接引用 `mods/<mod-b>/src/` 内部实现；经过验证可复用的类型或工具函数，必须提炼至 `shared/sdk/` 后再跨插件复用。
+- **Godot 无头防弹窗硬约束**：任何命令行探针、构建脚本或自动化测试调用 `<GODOT_BIN>` 时，**必须显式传入 `--headless --quit`**（使用 `-s`/`--script` 执行脚本时亦须同时保留 `--headless --quit`），且在 Windows 下通过 Python `subprocess` 启动子进程时须设置 `creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)`，严禁弹出 GUI 或控制台窗口打扰用户。
 
 ## 4. 通用代码与提交规范
 
+- **多智能体模型分工默认偏好**：在支持指定模型的子智能体/Swarm 协作场景下（除非用户当次另有指定），默认将简单/常规任务交由 `Hydrogen (Extra)`，编码实现交由 `Neon (High)`，项目管理与验收审查交由 `Carbon (High)`。
 - **文件编码与命名**：全部文本源码、配置与文档统一使用 UTF-8 无 BOM 编码；插件目录命名统一采用 `kebab-case`（如 `dnd5e-sheet-helper`）。
 - **提交信息前缀**：采用约定式提交前缀：`feat(<mod>):`、`fix(<mod>):`、`docs(shared):`、`chore(tools):`、`refactor(<scope>):`。
 - **文档同步要求**：每当从 Playtest 客户端或官方源码核实新接口、字段或兼容问题并更新 `shared/docs/` 时，须同步记录对应客户端版本号、Commit 哈希与验证日期。

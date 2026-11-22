@@ -5,7 +5,7 @@
 > 当前处于 Steam Playtest 内测阶段，后续 Mod 接口可能存在变更。本文档基于官方现役 `Practice` 主线源码（`origin/codex/fuvtt-project-sync`）与本地 Steam 客户端实测核验沉淀。  
 > **实测验证基准**：现役 `Practice` 主线 `v0.0.56`（Git `282aee64`）/ Steam Playtest `v0.0.57`（Commit `3f20e8e`）  
 > **底盘引擎**：`Godot Engine v4.8.beta1.mono.official` (64-bit) + `.NET 10 CoreCLR` (`Practice.dll`)  
-> **验证日期**：`2026-11-20`
+> **验证日期**：`2026-11-22`
 
 ---
 
@@ -184,12 +184,16 @@ scenes/session/plugins/plugin_import.gd 调用 load(_row.entry_path).new()
 入口脚本必须继承自 `RefCounted`（每次导入独立实例化并运行在 `WorkerThreadPool` 后台线程，严禁依赖成员变量跨次导入保持状态），实现以下两个方法：
 
 #### 1. `inspect_import(path: String, options: Dictionary, host: RefCounted) -> Dictionary`
-- **入参**：`path`（物理源文件路径）、`options`（当前插件配置字典深拷贝）、`host`（`ImportBridge` 实例）。
-- **返回值强契约**（`scenes/session/plugins/import_bridge.gd`）：
+- **入参**：`path`（物理源文件路径）、`options`（当前插件配置字典深拷贝，注意可能存在 `null` 等非字符串/非布尔边界值，读取前须安全强转）、`host`（`ImportBridge` 实例）。
+- **返回值强契约**（`scenes/session/plugins/import_bridge.gd` 与 `import_confirmation.gd`）：
   ```gdscript
   {
     "ok": true,
+    "name": display_name,            # 推荐返回可读世界名称（实机 ImportBridge 会按选中文件名覆盖战役标题；verify-host 可读到真实名称）
     "sha256": FileAccess.get_sha256(path), # 必填！宿主直接无保护读取 result.sha256
+    "source_bytes": int,             # 源文件物理字节数（import_confirmation.gd 确认面板读取）
+    "decoded_bytes": int,            # 展开后的逻辑世界数据估计字节数（import_confirmation.gd 读取）
+    "unique_images": int,            # 唯一图片引用数（注意实机 ImportBridge.inspect() 会被 assets.size() 覆盖）
     "counts": {
       "records": int, "images": int, "selected_images": int,
       "maps": int, "characters": int, "objects": int,
@@ -199,14 +203,18 @@ scenes/session/plugins/plugin_import.gd 调用 load(_row.entry_path).new()
     "assets": { "https://...": max_pixel_count }
   }
   ```
+- **`ImportBridge.inspect()` 实测关键机制（防坑）**：
+  1. `ImportBridge.inspect()` 会将 `result.assets` 的**全部键**直接传给 `PluginPackageJob.ProbeAssets` 探测未缓存远端图片，并随后**用 `result.assets.size()` 覆盖 `unique_images`**！
+  2. 因此**严禁将本地目录或 ZIP 内嵌图片路径放入 `result.assets`**，否则 `ProbeAssets` 会将本地图片误判为 `unknown_images`；本地图片仅应计入 `counts.images` / `counts.selected_images`，`result.assets` **只允许放入 `http://` / `https://` 远端 URL**。
+  3. 若插件提供“跳过远端下载”开关（如 `download_remote_assets == false`），`inspect_import()` 应将 `result.assets` 置为空字典 `{}`，防止 `ProbeAssets` 在离线环境阻塞确认弹窗。
 - 取消时检测 `host.cancelled()` 并返回 `{"ok": false, "reason": "cancelled"}`。
-- 强烈建议通过防腐层 `shared/sdk/fu_sdk/v1.gd` 的 `session.ok_inspect(path, counts_override, remote_assets)` 构造返回值，自动计算 SHA-256 并补齐全部计数键。
+- 强烈建议通过防腐层 `shared/sdk/fu_sdk/v1.gd` 的 `session.ok_inspect(path, counts_override, remote_assets, decoded_bytes, display_name)` 构造返回值，自动计算 `sha256`、`source_bytes` 并补齐全部确认字段与计数键。
 
 #### 2. `prepare_import(path: String, options: Dictionary, host: RefCounted) -> Dictionary`
 - **推荐两阶段顺序**：
   1. 调用 `host.empty_world()` 获取宿主标准世界结构（`fus.practice.world` v3 + `fus.floor_layers.v2`）。
-  2. 先提交墙体/门窗/几何预览并调用 `host.finish_geometry_preview()`，再通过 `host.archive_image(url, proxy)` 下载归档大体积图片，降低导入界面卡顿。
-  3. 遇到非致命告警（如跳过退化几何或零长度门）调用 `host.warn(text)`（最多保留 100 条，最终写入会话备注）。
+  2. 先提交墙体/门窗/几何预览并调用 `host.finish_geometry_preview()`，再发布本地图片或通过 `host.archive_image(url, proxy)` 下载归档远端大体积图片，降低导入界面卡顿。
+  3. 遇到非致命告警（如跳过退化几何、零长度门或缺失资源）调用 `host.warn(text)`（最多保留 100 条，最终写入会话备注）。
   4. 返回：
      ```gdscript
      {
@@ -218,6 +226,9 @@ scenes/session/plugins/plugin_import.gd 调用 load(_row.entry_path).new()
        }
      }
      ```
+- **`ImportBridge.run()` 实测默认行为**：
+  - **战役名由选中文件名推导**：`ImportBridge.inspect()` / `run()` 会直接以选中文件名（去扩展名）作为战役标题（例如选择解压目录内的 `world.json` 时，宿主固定将活动名显示为 `"world"`）。插件应通过 `host.warn()` 告知用户，并将真实世界名称保留在 `world.modules` 与楼层名中。
+  - **内置可选模块默认关闭**：`ImportBridge.run()` 硬编码设置 `metadata.module_choices = []`，因此 `grid_alignment`、`simple_fog` 等模块即使已写入配置或组件，导入后仍需 GM 在战役设置中手动开启（插件应通过 `host.warn()` 提醒）。
 
 ### 3.2 外部安装、版本比较规则与本地调试工作流
 
@@ -234,6 +245,18 @@ scenes/session/plugins/plugin_import.gd 调用 load(_row.entry_path).new()
    - **通道 A（`fuvtt_cli.py verify-host <mod>` 无头引擎冒烟）**：使用本地 `<GODOT_BIN>` 在隔离目录执行真实 GDScript 编译检查、`inspect_import`/`prepare_import` 回合冒烟与 `var_to_bytes` 往返校验。
    - **通道 B（`fuvtt_cli.py sync <mod>` 离线原子直写）**：自动计算完整 `file_hashes`、无损对齐 `settings`、补齐 `source_url` 与 `installed_at` 并执行版本冲突检查（开发期同版本重装可加 `--allow-same-version`），随后在客户端面板点击“刷新”即可生效。
    - **通道 C（`fuvtt_cli.py serve` + `build --bump-dev` 本地 HTTP 热更新）**：在 `127.0.0.1:8765` 托管 `.zip`，走 100% 原生下载与更新管线。
+
+### 3.3 双输入源模式、本地/ZIP 资产发布与无头验证回退
+
+1. **双输入源模式（`import_extensions: ["zip", "json"]`）**：
+   - 现役 `Practice` 会话插件体系**未向外部插件开放 `FILE_MODE_OPEN_DIR` 目录选择器**，仅允许按 `import_extensions` 过滤的文件选择与拖放。
+   - 若外部世界格式同时存在归档包（`.zip`）与已解压文件夹两种分发形态，推荐声明 `import_extensions: ["zip", "json"]`，引导用户选中解压目录内的清单文件（如 `world.json`）。
+   - 因宿主 `plugin_import.gd` 仅校验扩展名，插件必须在打开阶段严格校验 `.json` 文件名及必需特征字段（拦截任意无关 `.json`）；读取 `.zip` 时需处理大小写敏感路径、URL 百分号编码（如 `%20`）、`__MACOSX/` / `.DS_Store` / `._*` 苹果元数据及深度 0/1 清单探测（可复用 `fu_sdk/modules/package_source.gd`）。
+2. **本地/ZIP 资产发布（`SharedAssetStore.Publish` 与 `ImageHeader` 约束）**：
+   - `host.archive_image(url, proxy)` 仅支持 `http://` / `https://` 远端 URL；本地目录或 `.zip` 内的图片字节流必须通过 `res://services/storage/SharedAssetStore.cs` 的 `Publish(global_dest, asset_ref, bytes)` 发布（返回 JSON 字符串，须解析确认 `ok == true`；实机 `host.destination` 经 `RootFor(dir)` 校验须位于 `sessions/桌面 ..._<32hex>` 下）。
+   - **`ImageHeader` 上限与 `asset://` 扩展名白名单差异**：`ImageHeader` 硬限制 **`MAX_SIDE = 32768`**、**`MAX_PIXELS = 134217728`**（`1 <= w, h <= 32768` 且 `w * h <= 134217728`）；`CampaignImageFiles` 与 `SharedAssetStore.Publish` 对 `asset://` 引用接受 **`png`、`jpg`、`jpeg`、`webp`、`bmp`**，**明确拒绝 `.svg` 与 `.gif`**（不同于 `res://` 额外放行 `.svg`）。因此从本地或归档提取的 **`.bmp` 与 `.svg` 应先在插件内解码/栅格化并经 `save_png_to_buffer()` 统一转为 `.png`**，再行发布。
+   - **前置魔数与流式头校验（杜绝 Godot `ERROR:` 日志）**：在调用 `Image.load_*_from_buffer()` 前，必须先做二进制魔数（PNG/JPG/WEBP/BMP/GIF）与图像头/流校验，探测 `<svg` 时必须使用 `.get_string_from_ascii()`（严禁对未知二进制字节调用 `.get_string_from_utf8()` 触发 `Unicode parsing error`），并直接拒收 `.gif`（`GIF8`）及损坏字节流，避免 Godot C++ 层向 stderr 打印 `ERROR:` 导致 `verify-host` 失败。
+   - **自发布文件追踪与 `MockHostBridge` 回退**：`ImportBridge._created_assets` 仅追踪 `archive_image()` 创建的文件；插件直接调用 `SharedAssetStore.Publish()` 写入 `destination/assets/` 的新文件须自行记录并在用户取消或失败时清理。在 `verify-host` 的 `MockHostBridge` 无头测试环境下不存在 `SharedAssetStore.cs` 与 `host.destination`/`host.root`，插件应先嗅探 `ResourceLoader.exists("res://services/storage/SharedAssetStore.cs")` 与非空 `host.destination`，未命中时跳过写盘并返回合法 `asset://<sha256>.<ext>`（推荐直接复用 `fu_sdk/modules/asset_publisher.gd`）。
 
 ---
 

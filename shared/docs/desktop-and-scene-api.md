@@ -5,7 +5,7 @@
 > 当前处于 Playtest 内测阶段，后续 mod 接口可能存在变更。本文档基于官方源码库 `Practice` 主线（远端分支 `origin/codex/fuvtt-project-sync`）与本机 Steam 客户端实机双源核实沉淀。  
 > **实测验证基准**：现役 `Practice` 主线 `v0.0.56`（Commit `282aee64`，`2026-11-19`）/ Steam Playtest 客户端 `v0.0.57`（Commit `3f20e8e`，`2026-11-20`）  
 > **底盘引擎**：`Godot Engine v4.8.beta1.mono.official` (64-bit) + `.NET 10 CoreCLR`  
-> **验证日期**：`2026-11-20`
+> **验证日期**：`2026-11-22`
 
 ---
 
@@ -74,6 +74,27 @@ const SOURCE_TO_WORLD := 64.0 / 150.0 # 0.4266666667
 ```
 - **有限数与非零缩放硬门禁**（`scenes/entities/entity_state_codec.gd`）：`pos`、`rot`、`scale` 必须全部有限（禁止 `NaN` / `Inf`），且**严禁 `is_zero_approx(scale.x)` 或 `is_zero_approx(scale.y)`**。
 - **尺寸与足迹范围**：`entity_size` 各分量须 `>= 4.0`；`footprint_radius` 须为有限浮点数且在 `[0.5, 4096.0]` 范围内（默认 `32.0`）。
+
+#### 全局方格对齐模块 Schema (`grid_alignment` / `fus.grid_alignment.config` v1)
+
+内置可选模块 `grid_alignment`（`grid_config.gd`）在 `world.modules.entries["grid_alignment"]`（条目 `version = 1`）中采用**严格 8 键配置**：
+
+```json
+{
+  "schema": "fus.grid_alignment.config",
+  "version": 1,
+  "cell_size": 64.0,
+  "offset": [0.0, 0.0],
+  "color": [0.5, 0.55, 0.65, 0.7],
+  "line_width": 1.0,
+  "snap_enabled": true,
+  "snap_strength": 0.1
+}
+```
+
+- **`cell_size`**：有限浮点数，范围 `[8.0, 4096.0]`（Fu VTT 世界单位，默认 `64.0`）。
+- **`offset` / `color`**：分别以 2 元素和 4 元素 `float` 数组序列化（对应 `Vector2` 偏移与 RGBA 线框色）。
+- **现役限制**：`grid_alignment` 为**全局单一方格网格**配置（不支持六边形网格或按楼层设置不同 `cell_size`）；同时由于 `ImportBridge.run()` 默认设置 `metadata.module_choices = []`，导入后 `grid_alignment` 处于关闭状态，需由 GM 在战役设置中启用（可通过 `fu_sdk` v1.2.0 的 `WorldBuilder.configure_grid_alignment(...)` 一键写入）。
 
 ### 1.3 图片金字塔（LOD）与 3D 物理骰子管线
 
@@ -180,11 +201,20 @@ const SOURCE_TO_WORLD := 64.0 / 150.0 # 0.4266666667
 1. 扫描所有 `vector_drawing.source.kind ∈ ["wall", "air", "door", "window", "glass"]` 的实体；
 2. 若实体尚未显式挂载 `res://modules/obstacle_authoring/comp_obstacle.gd`，自动调用 C# `FobrWallKernel.CollisionSource(paths, size)` 计算带 SHA-256 签名的 `shape`（`paths` + `segments` + `bounds`）并注入 `comp_obstacle.gd`；
 3. 按楼层运行 `prepare_facts()`：自动用同楼层活跃的 `air`/`door`/`window`/`glass` 对 `wall`（及用 `air` 对 `door`/`window`/`glass`）执行 C# `FobrWallKernel.CollisionBoundary()` 布尔差集并写入 `cache`。
-4. **严格输入前提**：`ObstacleShapes.valid_paths()` 要求**每条路径环至少 3 个顶点**（`ring.size() >= 3`）、总环数 `<= 8192`、总点数 `<= 200000`；若导入插件向障碍物写入 2 点退化线段，将导致整个导入以 `obstacle_shape_preparation_failed` 失败（`fu_sdk` v1.1 已自动过滤 `< 3` 点环并告警）。
+4. **严格输入前提与 `FobrWallKernel.AuthorReadPaths` 闭合环校验**：`FobrWallKernel.AuthorReadPaths` 读取 `vector_drawing.paths`，在 `ClipperD(Precision = 6)` 下要求**每条路径环至少 3 个顶点**（`ring.size() >= 3`）且闭合多边形面积满足 **`|Area| >= 1e-12`**（总环数 `<= 8192`、总点数 `<= 200000`）；向障碍物写入 2 点退化线段或零面积环将触发 `author_ring_degenerate` / `obstacle_shape_preparation_failed` 导致整包导入中止。
+5. **2 点线段挤出为 4 顶点闭合矩形标准公式（含浮点 ULP 防护）**：
+   外部 VTT（如 FVTT）常将墙/门/窗表示为 2 点线段 `[p0, p1]`，转换时严禁直接在大坐标下先偏移法线再减去中心点，否则 `float32` 尾数在 `~1e7` 量级会发生 **ULP 精度坍塌** 导致相邻顶点重合、面积归零。标准步骤如下（`fu_sdk` v1.2.0 `WorldBuilder.extrude_segment_to_quad` / `add_segment_*` 已内置）：
+   1. 过滤非有限坐标、坐标绝对值超限（如 `> 1e7`）或线段长度 `< min_length`（如 `maxf(0.5, 1e-3)`）的退化线段；
+   2. **先相对中点局部化，再沿法线挤出**：
+      $$\text{center} = \frac{p_0 + p_1}{2}, \quad p_{0,\text{local}} = p_0 - \text{center}, \quad p_{1,\text{local}} = p_1 - \text{center}$$
+      $$\hat{d} = \frac{p_{1,\text{local}} - p_{0,\text{local}}}{\|p_{1,\text{local}} - p_{0,\text{local}}\|}, \quad \vec{n} = (-\hat{d}_y, \hat{d}_x) \cdot \text{half\_w} \quad (\text{half\_w} \ge 0.5)$$
+      输出局部 4 顶点环 **`[p0_local + n, p1_local + n, p1_local - n, p0_local - n]`**；
+   3. 校验四边形交叉面积 `absf((r1 - r0).cross(r2 - r0)) > 0.0`（且 `|Area| >= 1e-12`），确保稳定通过 `FobrWallKernel.AuthorReadPaths` 与 `ClipperD(Precision = 6)`。
 
-### 3.3 双迷雾模块（互斥）
+### 3.3 双迷雾模块（互斥）与不可见纯光源锚点配置
 
-- **简易迷雾 (`modules/simple_fog/`)**：合作式本机 GPU 视野/光照显隐（挂载 `comp_simple_vision.gd` / `comp_simple_light.gd`），**不参与实体披露拦截**，操控权撤回仅收回该角色的观察源。
+- **简易迷雾 (`modules/simple_fog/`)**：合作式本机 GPU 视野/光照显隐（挂载 `comp_simple_vision.gd` / `comp_simple_light.gd`），**不参与实体披露拦截**，操控权撤回仅收回该角色的观察源。`radius` 接收 **Fu VTT 世界单位**（从源网格距离换算公式：`(range_units / maxf(0.01, grid_distance)) * 64.0`），`view_angle` 单位为度（外部输入 `<= 0` 或 `>= 360` 时应归一为 `360.0`）。
+- **不可见纯光源锚点（抑制默认灰色占位方块）**：导入独立的环境点光源时，若通过普通无贴图实体（`sprite_path = ""`、`entity_type = "object"`、`selectable_in_select_mode = false`）挂载 `comp_simple_light.gd`，默认 `show_fallback = true` 会在地图上渲染出一个灰色方块。必须同时将**实体顶层 `entity["fallback_color"]`** 与 **`components[0]["state"]["fallback_color"]`** 设为透明色 `Color(1, 1, 1, 0)`，并将 **`components[0]["state"]["show_fallback"]`** 设为 `false`（`fu_sdk` v1.2.0 提供 `WorldBuilder.add_point_light(...)` 与 `suppress_entity_fallback_box(entity_id)` 自动完成上述设置）。
 - **完整迷雾（与简易迷雾互斥）**：基于 `PointLight2D` / `LightOccluder2D`（R 基础视距 / G 通往亮区视线 / B 环境照明，合成 `max(R, min(G, B))`）+ 原生 C# `FogGeometryKernel*.cs` 后台计算按角色/楼层隔离的探索历史，只向玩家下发当前获准角色的匿名历史几何。
 
 ---
@@ -227,7 +257,7 @@ const SOURCE_TO_WORLD := 64.0 / 150.0 # 0.4266666667
 > [!CAUTION]
 > **必须严守的两项核心不变量**：
 > 1. **`components[0..1]` 固定前缀**：`ImportBridge.preview_entity` 硬编码读取 `entity.components[0].state`，且 `EntityStateCodec.EntryCoreDrafts.prefix_for` 要求前两项严格为 `[comp_visual.gd, comp_permission.gd]` 才可命中晚加入快路径；所有可选组件必须追加在索引 `>= 2`。
-> 2. **`CompVisual.sprite_path` 严禁 `user://`**：`CompVisual._valid_image_path()` 仅允许空串 `""`、`asset://<sha256>.<ext>`（通过 `host.archive_image()` 归档获得）或已存在的 `res://*.{png,jpg,jpeg,webp,svg}`；传入 `user://` 将直接被 `WorldSnapshot.validate_data()` 拒收！
+> 2. **`CompVisual.sprite_path` 严禁 `user://` 且区分 `asset://` 与 `res://` 白名单**：仅允许空串 `""`、`asset://<sha256>.<ext>` 或已存在的 `res://` 贴图；其中 **`asset://`（`CampaignImageFiles` / `SharedAssetStore.Publish`）接受 `png`、`jpg`、`jpeg`、`webp`、`bmp` 并拒绝 `.svg` 与 `.gif`**，而 `res://` 额外放行 `.svg`（均拒绝 `.gif`）。传入 `user://` 将直接被 `WorldSnapshot.validate_data()` 拒收！
 
 ### 4.2 `CompVisual` 状态与 `vector_drawing` 强配额
 

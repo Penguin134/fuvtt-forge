@@ -5,7 +5,7 @@
 > 当前处于 Steam Playtest 内测阶段，后续 Mod 接口可能存在变更。本文档基于本地 Steam 客户端解包与官方只读源码分支核验沉淀。  
 > **实测验证基准**：现役 `Practice` 主线 `v0.0.56`（Git `282aee64`，`2026-11-19`）/ Steam Playtest `v0.0.57`（Commit `3f20e8e`，`2026-11-20`）  
 > **底盘引擎**：`Godot Engine v4.8.beta1.mono.official` (64-bit) + `.NET 10 CoreCLR` (`Practice.dll`)  
-> **验证日期**：`2026-11-20`
+> **验证日期**：`2026-11-22`
 
 ---
 
@@ -93,7 +93,7 @@ $$\text{Physical File Offset} = \text{PCK\_START} + \text{FILE\_BASE} + \text{EN
 
 ### 5.1 构建期自动内嵌防腐层（`shared/sdk/fu_sdk/`）
 
-- 由于无创意工坊前置依赖机制，所有业务插件统一面向 `shared/sdk/fu_sdk/v1.gd` 编程；`fuvtt_cli.py build` 在打包期自动将 `shared/sdk/fu_sdk/` 嵌入每个插件 ZIP 的 `lib/fu_sdk/`。
+- 由于无创意工坊前置依赖机制，所有业务插件统一面向 `shared/sdk/fu_sdk/v1.gd`（`v1.2.0`）及其 `modules/` 可复用子模块编程；`fuvtt_cli.py build` 在打包期自动将 `shared/sdk/fu_sdk/` 嵌入每个插件 ZIP 的 `lib/fu_sdk/`。
 - 当宿主升级底层格式时，仅需单点修改 `shared/sdk/fu_sdk/adapters/host_v1_adapter.gd` 并运行 `build --all`。
 
 ### 5.2 Steam PCK + Git 源码双源金丝雀巡检
@@ -133,3 +133,8 @@ python shared/tools/fuvtt_cli.py verify-host <mod-name>
    - 本地客户端、官方只读源码库与 Godot 控制台路径仅在未入库的 `.env.local` 中配置（`FUVTT_INSTALL_DIR`、`FUS_REPO_DIR`、`FUS_SOURCE_REF`、`GODOT_BIN`），受控代码、脚本与文档中统一使用 `<FUVTT_INSTALL_DIR>`、`<FUS_REPO_DIR>`、`<GODOT_BIN>` 占位符，零硬编码本机路径。
 5. **文档同步要求**：
    - 每次通过 `inspect-client --extract --source both` 发现契约变动并更新 `shared/docs/` 时，须同步更新文档顶部版本号、Commit 哈希与验证日期。
+6. **`ImportBridge`、`asset://` 与几何/素材库实机踩坑速查（`2026-11-22` 汇总）**：
+   - **`inspect_import` 与 `ProbeAssets`**：`ImportBridge.inspect()` 会用 `result.assets.size()` 覆盖 `unique_images` 并将 `assets` 全量传给 `ProbeAssets`；本地/ZIP 图片绝不能放入 `result.assets`（仅放 `http://`/`https://` URL），并应提供 `source_bytes`、`decoded_bytes`、`unique_images` 与 `name`（详见 `shared/docs/plugin-lifecycle.md`）。
+   - **双输入源与默认行为**：客户端未开放 `FILE_MODE_OPEN_DIR`，需要同时支持归档与目录的插件应声明 `import_extensions: ["zip", "json"]`；注意 `ImportBridge.run()` 按选中文件名（如 `world.json` → `"world"`）命名战役，且硬编码 `metadata.module_choices = []`。
+   - **`asset://` 与 `ImageHeader` 预检**：`asset://` 仅接受 `png`/`jpg`/`jpeg`/`webp`/`bmp`（限边长 `<= 32768`、总像素 `<= 134217728`），拒绝 `.svg` 与 `.gif`；解码前须做魔数与头部预检（用 `.get_string_from_ascii()` 测 `<svg`），将 `.bmp`/`.svg` 转为 `.png`、拒收 `.gif`，避免 Godot C++ `ERROR:` 日志。
+   - **大坐标 ULP、透明光源与素材库隔离**：2 点线段墙体须先相对中点局部化再挤出为 `>= 3` 顶点且 `|Area| >= 1e-12` 的闭合多边形，纯光源锚点须隐藏默认 `fallback_color` 方块（详见 `shared/docs/desktop-and-scene-api.md`）；`entity-library` 写入须过四重门控并链式传递 `.revision`，`world.modules` 须受 `6 MiB / 8 MiB / 30 MiB` 渐进裁剪（详见 `shared/docs/macro-and-rules.md`）。

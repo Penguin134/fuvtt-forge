@@ -5,7 +5,7 @@
 > 当前处于 Playtest 内测阶段，后续插件与模块接口可能存在变更。本文档基于官方源码库（只读核验）与本地 Steam 客户端实际解包验证沉淀。  
 > **现役实测验证基准**：`Practice` 主线 `v0.0.56`（Git `origin/codex/fuvtt-project-sync`，Commit `282aee64`，`2026-11-19`）/ Steam Playtest `v0.0.57`（Commit `3f20e8e`，`2026-11-20`）  
 > **底盘引擎**：`Godot Engine v4.8.beta1.mono.official` (64-bit) + `.NET 10` CoreCLR  
-> **验证日期**：`2026-11-20`
+> **验证日期**：`2026-11-22`
 
 > [!IMPORTANT]
 > **官方仓库双代码线辨析（防止契约混用）**  
@@ -100,7 +100,7 @@ Fu vtt（`Practice` 线）的本地桌面世界采用强校验、增量递增的
 ```
 
 - **图层类型（`fus.floor_layers.v2`）**：支持 `"map"`、`"entity"`、`"obstacle"` 与 `"area"` 四类图层，默认 `locked = false`（详见 `shared/docs/desktop-and-scene-api.md`）。
-- **`world.modules` 分区配额（`world_module_state.gd`）**：当前版本为 **`version = 2`**（向下兼容 `v1`）；顶层最多 **`128`** 个模块条目，单条模块状态上限 **`6 MiB`**，整个 `modules` 分区总上限 **`8 MiB`**（整体战役封装仍受 `16 MiB` 单文件上限约束）。
+- **`world.modules` 分区配额（`world_module_state.gd`）**：当前版本为 **`version = 2`**（向下兼容 `v1`）；顶层最多 **`128`** 个模块条目，单条模块状态上限 **`6 MiB`**，整个 `modules` 分区总上限 **`8 MiB`**（整体 `.world` 封装受 `CampaignRecord.wrap` **`32 MiB`** 上限约束，导入器建议以 **`30 MiB`** 作为安全预算上限并预留 `2 MiB` 余量）。
 
 ---
 
@@ -209,8 +209,35 @@ def pack_fobr(data: dict, output_path: str) -> None:
 ### 4.3 D&D 规则集、宏系统与角色卡当前状态
 
 - 在现役 `Practice` 线的 `docs/TODO.md` 中，**“传送门、DND、快捷移动”仍处于“具体规则和交互待定”状态**；
-- 现役客户端**尚未实装内置宏执行引擎、角色卡系统、背包/资源池系统或第三方运行时规则插件 API**；
-- 当前外部开发者面向 Steam `Practice` 客户端构建扩展的唯一受支持路径，是符合 **`fus.session-plugin.v1`（`host_api = 1`, `scope = "session"`）** 的离线场景/数据导入插件（详见 `shared/docs/plugin-lifecycle.md`）。
+- 现役客户端**尚未实装内置宏执行引擎、角色卡系统、背包/资源池系统或第三方运行时规则插件 API**（`scenes/candidates/*` 下的 `comp_entity_note`、`comp_initiative`、`comp_resource_pool`、`comp_scene_box` 属停放/候选组件语义）；
+- 当前外部开发者面向 Steam `Practice` 客户端构建扩展的唯一受支持路径，是符合 **`fus.session-plugin.v1`（`host_api = 1`, `scope = "session"`）** 的离线场景/数据导入插件（详见 `shared/docs/plugin-lifecycle.md`）。若需持久化可复用的角色/怪物棋子模板及完整 TRPG 数值摘要，应遵循以下两项现役集成模式（可直接使用 `fu_sdk` v1.2.0 内置工具与 `modules/entity_library_writer.gd`）。
+
+### 4.4 `EntityLibraryStore` 素材库集成契约（`<root>/entity-library/`）
+
+现役客户端由 `EntityLibraryStore`（`res://services/entity_library/EntityLibraryStore.cs` / `entity_library_store.gd`）与 `EntityLibraryJob` 管理跨战役可复用的单位与预设素材库（存储于 `<root>/entity-library/` 及缩略图目录 `<root>/entity-library/assets/`）。外部导入插件通过实例化 `res://services/storage/SharedAssetStore.cs` 提供的库写入接口即可在导入期安全注册可拖放角色与怪物：
+
+1. **四重安全门控（防污染真实用户库）**：
+   任何写入 `<root>/entity-library/` 的逻辑必须先全部满足以下 4 项条件，否则直接跳过（确保 `verify-host` 与无头单元测试零污染真实用户数据）：
+   1. 插件选项允许注册（如 `register_entity_library == true`）；
+   2. `ResourceLoader.exists("res://services/storage/SharedAssetStore.cs") == true`（离线测试仅在显式注入隔离 Mock 存储时放行）；
+   3. `host.get("root")` 与 `host.get("destination")` 均为非空字符串，且经 `ProjectSettings.globalize_path()` 解析后 `destination` 严格位于 `<root>/sessions/桌面 YYYY-MM-DD HHMMSS_<32hex>`（或 `recycle/...`）下；
+   4. 导入未被用户取消（`not session.is_cancelled()`）。
+2. **库读取、图片物化与 `.revision` 链式写入协议**：
+   - **返回类型差异**：`OpenLibrary(global_root)`、`AdoptLibraryAsset(global_root, global_dest, ref)`、`ShareLibraryAsset(global_root, ref)` 与 `WriteLibraryRecord(...)` 均返回 **JSON 字符串**；唯独 **`ReadLibraryRecords(global_root)` 直接返回 Godot `Dictionary`**（`{ok, records, revision}`），切勿对其调用 JSON 解析。
+   - **素材物化（必调）**：`MaterializeLibraryAsset` 与素材库缩略图预览读取 `<root>/entity-library/assets/`，仅将图片 `Publish` 到会话 `destination` 不足以让素材库显示贴图；对每个携带 `asset://<sha256>.<ext>` 的记录必须调用 **`AdoptLibraryAsset(global_root, global_dest, reference)`** 与 **`ShareLibraryAsset(global_root, reference)`**。
+   - **幂等 `.revision` 链与回滚**：调用 `WriteLibraryRecord(global_root, row.id, expected_bytes, var_to_bytes(row), current_revision)` 时，`expected_bytes` 应取自 `loaded.records.get(row.id, PackedByteArray())`（若字节完全一致可跳过），并从每次返回的 JSON 中提取新 `revision` 链式传入下一次写入；若中途取消或失败，按写入逆序再次调用 `WriteLibraryRecord(global_root, rec_id, written_bytes, prev_bytes, rev)` 撤销变更。
+3. **`folder` / `unit` / `preset` 记录 Schema（`EntityLibraryJob.valid_row`）**：
+   - **公共外层必填键**：`version: 1`、`id`（32 位小写 hex，推荐用确定性命名空间 SHA-256 截断生成）、`name`（非空 `<= 256` 字符）、`kind`（`"folder" | "unit" | "preset"`）、`folder_id`（`""` 或无环路的 32 位小写 hex 父目录 ID）。非 `folder` 行另须提供 `reference`（`""` 或 `asset://...`）、`size`（`Vector2 >= Vector2(4, 4)`）与 `record: Dictionary`。
+   - **默认推荐使用 `kind = "unit"`**：因 `ImportBridge.run()` 硬编码 `metadata.module_choices = []`（`simple_fog` 等可选模块默认未启用），而 `EntityLibraryStore.prepare_placement()` 会拒绝含未启用可选组件（如 `comp_simple_vision.gd`）的 `preset` 并报错 `preset_component_unavailable`；故外部导入角色/怪物推荐以 **`kind = "unit"`** 注册（`record.data` 含 9 键：`id, name, type: "generic", category: "library", size, color: Color.WHITE, sprite: ref, components: {"unit": {}}, selectable_in_select_mode: false`），若使用 `kind = "preset"`，其 `snapshot` 仅能包含核心必选组件（`comp_visual.gd`、`comp_permission.gd`、`comp_unit.gd`）。
+
+### 4.5 `world.modules` 渐进式 `6 MiB / 8 MiB / 30 MiB` 体积裁剪模式
+
+在现役 `Practice` 尚无原生角色卡表单的阶段，外部导入器可将完整 TRPG 属性块（AC、HP、CR/等级、属性调整值、速度、感官、传记等）写入 `world.modules.entries["<plugin_id>"]`（纯数据字典，需剔除 `NaN`/`Inf` 及超过 32 层的嵌套）。面对大型战役（数百名带 HTML 长传记的 NPC/PC），应采用**三级渐进预算裁剪**（每次检查 `var_to_bytes(entry_state).size() <= 6 MiB`、`var_to_bytes(world.modules).size() <= 8 MiB` 与 `var_to_bytes(world).size() <= 30 MiB`，也可调用 `WorldBuilder.can_fit_module_state()`）：
+
+1. **Level 0（完整档案）**：剥离 HTML 标签并按单条上限截断传记（如 `<= 2048` 字符），保留完整属性与扩展摘要；
+2. **Level 1（裁剪传记）**：清空所有角色/怪物的 `biography` 长文本，保留核心数值与结构化摘要，并记 `session.add_warning()`；
+3. **Level 2（裁剪扩展摘要）**：仅保留核心身份与战斗字段（`id, name, actor_type, ac, hp, cr_or_level, sprite_ref`），移除次级扩展字典；
+4. **Level 3（安全省略）**：若整包世界仍逼近 `30 MiB` 上限，放弃写入该可选模块条目并发出非致命警告，保障 `.world` 主存档稳定落盘。
 
 ---
 

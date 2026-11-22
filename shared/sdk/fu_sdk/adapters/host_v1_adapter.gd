@@ -24,7 +24,8 @@ const DEFAULT_LAYER_KINDS: Array[String] = ["map", "entity", "obstacle"]
 const LAYER_KINDS: Array[String] = ["map", "entity", "obstacle", "area"]
 const LAYER_ACCESS_POLICIES: Array[String] = ["all", "host", "players"]
 const OBSTACLE_KINDS: Array[String] = ["wall", "air", "door", "window", "glass"]
-const ALLOWED_RES_IMAGE_EXTENSIONS: Array[String] = ["png", "jpg", "jpeg", "webp", "svg"]
+const ALLOWED_ASSET_IMAGE_EXTENSIONS: Array[String] = ["png", "jpg", "jpeg", "webp", "bmp"]
+const ALLOWED_RES_IMAGE_EXTENSIONS: Array[String] = ["png", "jpg", "jpeg", "webp", "bmp", "svg"]
 
 const MAX_FLOORS: int = 512
 const MAX_LAYERS_PER_FLOOR: int = 256
@@ -45,6 +46,7 @@ const MAX_MODULE_ENTRIES: int = 128
 const MAX_MODULE_ID_LENGTH: int = 128
 const MAX_MODULE_ENTRY_BYTES: int = 6 * 1024 * 1024
 const MAX_MODULE_TOTAL_BYTES: int = 8 * 1024 * 1024
+const MAX_WORLD_BUDGET_BYTES: int = 30 * 1024 * 1024
 
 const DEFAULT_SOURCE_UNITS_PER_CELL: float = 150.0
 const WORLD_UNITS_PER_CELL: float = 64.0
@@ -148,9 +150,119 @@ func sanitize_footprint_radius(value: float) -> float:
 	return clampf(value, MIN_FOOTPRINT_RADIUS, MAX_FOOTPRINT_RADIUS)
 
 
+func coerce_bool(value: Variant, fallback: bool = false) -> bool:
+	match typeof(value):
+		TYPE_BOOL:
+			return value == true
+		TYPE_INT:
+			return int(value) != 0
+		TYPE_FLOAT:
+			var num: float = float(value)
+			if not is_finite(num):
+				return fallback
+			return num != 0.0
+		TYPE_STRING:
+			var normalized: String = sanitize_text(str(value)).strip_edges().to_lower()
+			match normalized:
+				"true", "1", "yes", "on":
+					return true
+				"false", "0", "no", "off":
+					return false
+				_:
+					return fallback
+		_:
+			return fallback
+
+
+func coerce_string(value: Variant, fallback: String = "") -> String:
+	if typeof(value) == TYPE_STRING:
+		return value as String
+	return fallback
+
+
+func _parse_int64_str(s: String) -> Variant:
+	var t: String = s.strip_edges()
+	if t.is_empty():
+		return null
+	var negative: bool = false
+	var idx: int = 0
+	var first_ch: int = t.unicode_at(0)
+	if first_ch == 45:
+		negative = true
+		idx = 1
+	elif first_ch == 43:
+		idx = 1
+	var n: int = t.length()
+	if idx >= n:
+		return null
+	for i: int in range(idx, n):
+		var c: int = t.unicode_at(i)
+		if c < 48 or c > 57:
+			return null
+	while idx < n and t.unicode_at(idx) == 48:
+		idx += 1
+	if idx == n:
+		return 0
+	var digits: String = t.substr(idx)
+	var dlen: int = digits.length()
+	if dlen > 19:
+		return null
+	if dlen == 19:
+		var limit: String = "9223372036854775808" if negative else "9223372036854775807"
+		if digits > limit:
+			return null
+		if negative and digits == "9223372036854775808":
+			return -9223372036854775807 - 1
+	var mag: int = int(digits)
+	return -mag if negative else mag
+
+
+func coerce_int(value: Variant, fallback: int = 0) -> int:
+	if value == null:
+		return fallback
+	var t: int = typeof(value)
+	if t == TYPE_INT:
+		return int(value)
+	if t == TYPE_FLOAT:
+		var f: float = float(value)
+		if is_finite(f) and f >= -9223372036854775808.0 and f < 9223372036854775808.0:
+			return int(f)
+		return fallback
+	if t == TYPE_STRING:
+		var s: String = sanitize_text(str(value)).strip_edges()
+		var parsed_i64: Variant = _parse_int64_str(s)
+		if parsed_i64 != null:
+			return int(parsed_i64)
+		if s.is_valid_int():
+			return fallback
+		if s.is_valid_float():
+			var fs: float = s.to_float()
+			if is_finite(fs) and fs >= -9223372036854775808.0 and fs < 9223372036854775808.0:
+				return int(fs)
+	return fallback
+
+
+func coerce_float(value: Variant, fallback: float = 0.0) -> float:
+	if value == null:
+		return fallback
+	var t: int = typeof(value)
+	if t == TYPE_INT:
+		return float(value)
+	if t == TYPE_FLOAT:
+		var f: float = float(value)
+		return f if is_finite(f) else fallback
+	if t == TYPE_STRING:
+		var s: String = sanitize_text(str(value)).strip_edges()
+		if s.is_valid_float():
+			var fs: float = s.to_float()
+			if is_finite(fs):
+				return fs
+	return fallback
+
+
 func is_valid_sprite_path(path: String) -> bool:
-	# 对齐 Practice CompVisual._valid_image_path (comp_visual.gd:638-640)：
-	# 仅允许空串、asset:// 内容寻址引用，或 res:// 内置合法图片路径；严格拒绝 user:// 等本地路径。
+	# 对齐 Practice CampaignImageFiles / ImageHeader 与 CompVisual._valid_image_path：
+	# asset:// 仅允许 png/jpg/jpeg/webp/bmp（拒绝 svg/gif）；res:// 允许 png/jpg/jpeg/webp/bmp/svg；严禁 user://。
 	var clean: String = sanitize_text(path).strip_edges()
 	if clean.is_empty():
 		return true
@@ -164,7 +276,7 @@ func is_valid_sprite_path(path: String) -> bool:
 		if dot_idx <= 0 or dot_idx >= body.length() - 1:
 			return false
 		var ext: String = body.substr(dot_idx + 1).to_lower()
-		return ext in ALLOWED_RES_IMAGE_EXTENSIONS
+		return ext in ALLOWED_ASSET_IMAGE_EXTENSIONS
 	if clean.begins_with("res://"):
 		if clean.contains(".."):
 			return false
@@ -253,20 +365,37 @@ func finish_geometry_preview(host: RefCounted) -> bool:
 func build_inspect_ok(
 	source_path: String,
 	counts_override: Dictionary = {},
-	remote_assets: Dictionary = {}
+	remote_assets: Dictionary = {},
+	decoded_bytes: int = -1,
+	display_name: String = ""
 ) -> Dictionary:
 	var file_sha256: String = ""
+	var source_bytes: int = 0
 	if not source_path.is_empty() and FileAccess.file_exists(source_path):
 		file_sha256 = FileAccess.get_sha256(source_path)
+		var f: FileAccess = FileAccess.open(source_path, FileAccess.READ)
+		if f != null:
+			source_bytes = maxi(0, int(f.get_length()))
+			f.close()
 
 	var counts: Dictionary = DEFAULT_INSPECT_COUNTS.duplicate()
 	for raw_key: Variant in counts_override.keys():
 		var key_name: String = str(raw_key)
 		counts[key_name] = int(counts_override[raw_key])
 
+	var final_decoded_bytes: int = decoded_bytes if decoded_bytes >= 0 else source_bytes
+	var unique_images: int = maxi(int(counts.get("images", 0)), remote_assets.size())
+	var clean_name: String = sanitize_catalog_name(display_name, "")
+	if clean_name.is_empty() and not source_path.is_empty():
+		clean_name = sanitize_catalog_name(source_path.get_file().get_basename(), "")
+
 	return {
 		"ok": true,
+		"name": clean_name,
 		"sha256": file_sha256,
+		"source_bytes": source_bytes,
+		"decoded_bytes": final_decoded_bytes,
+		"unique_images": unique_images,
 		"counts": counts,
 		"assets": remote_assets.duplicate(),
 	}
@@ -514,6 +643,43 @@ func set_active_floor(world: Dictionary, floor_uid: String) -> Dictionary:
 	return build_failed("unknown_floor_uid")
 
 
+func rename_floor(world: Dictionary, floor_uid: String, new_name: String) -> Dictionary:
+	if floor_uid.is_empty():
+		return build_failed("unknown_floor_uid")
+	var catalog_var: Variant = world.get("catalog", null)
+	if not (catalog_var is Dictionary):
+		return build_failed("invalid_world_catalog")
+	var catalog: Dictionary = catalog_var
+	var floors_var: Variant = catalog.get("floors", null)
+	if not (floors_var is Array):
+		return build_failed("missing_world_floors")
+
+	var clean_name: String = sanitize_catalog_name(new_name, "1F")
+	var found: bool = false
+	for raw_floor: Variant in floors_var as Array:
+		if raw_floor is Dictionary:
+			var fd: Dictionary = raw_floor as Dictionary
+			if str(fd.get("floor_uid", "")) == floor_uid:
+				fd["name"] = clean_name
+				found = true
+				break
+	if not found:
+		return build_failed("unknown_floor_uid")
+
+	var layers_root_var: Variant = catalog.get("layers", null)
+	if layers_root_var is Dictionary:
+		var layer_floors_var: Variant = (layers_root_var as Dictionary).get("floors", null)
+		if layer_floors_var is Array:
+			for raw_lf: Variant in layer_floors_var as Array:
+				if raw_lf is Dictionary:
+					var lfd: Dictionary = raw_lf as Dictionary
+					if str(lfd.get("floor_uid", "")) == floor_uid and lfd.has("name"):
+						lfd["name"] = clean_name
+						break
+
+	return {"ok": true, "floor_uid": floor_uid, "name": clean_name}
+
+
 func get_floor_layer_map(world: Dictionary, floor_uid: String) -> Dictionary:
 	var catalog_var: Variant = world.get("catalog", null)
 	if not (catalog_var is Dictionary):
@@ -674,6 +840,55 @@ func make_text_visual(text: String, font_size: float = 24.0) -> Dictionary:
 		"source_info": {},
 		"vector_drawing": drawing,
 	}
+
+
+func extrude_segment_to_quad(
+	p0: Vector2,
+	p1: Vector2,
+	half_width: float = 6.0,
+	min_length: float = 0.5
+) -> PackedVector2Array:
+	if (
+		not is_finite(p0.x)
+		or not is_finite(p0.y)
+		or not is_finite(p1.x)
+		or not is_finite(p1.y)
+		or not is_finite(half_width)
+		or not is_finite(min_length)
+	):
+		return PackedVector2Array()
+	var half_w: float = maxf(0.5, half_width)
+	var min_len: float = maxf(1e-6, min_length)
+	var seg: Vector2 = p1 - p0
+	if not is_finite(seg.x) or not is_finite(seg.y):
+		return PackedVector2Array()
+	var seg_len: float = seg.length()
+	if not is_finite(seg_len) or seg_len < min_len or is_zero_approx(seg_len):
+		return PackedVector2Array()
+	var dir: Vector2 = seg / seg_len
+	if not is_finite(dir.x) or not is_finite(dir.y) or dir.length_squared() < 0.5:
+		return PackedVector2Array()
+	var n: Vector2 = Vector2(-dir.y, dir.x) * half_w
+	if not is_finite(n.x) or not is_finite(n.y):
+		return PackedVector2Array()
+	var q0: Vector2 = p0 + n
+	var q1: Vector2 = p1 + n
+	var q2: Vector2 = p1 - n
+	var q3: Vector2 = p0 - n
+	if (
+		not is_finite(q0.x) or not is_finite(q0.y)
+		or not is_finite(q1.x) or not is_finite(q1.y)
+		or not is_finite(q2.x) or not is_finite(q2.y)
+		or not is_finite(q3.x) or not is_finite(q3.y)
+	):
+		return PackedVector2Array()
+	if q0 == q1 or q1 == q2 or q2 == q3 or q3 == q0 or q0 == q2 or q1 == q3:
+		return PackedVector2Array()
+	# 平移等价鞋带面积校验（防御大坐标 float32 ULP 坍缩导致的零面积退化）
+	var area: float = absf((q1 - q0).cross(q2 - q0) + (q2 - q0).cross(q3 - q0)) * 0.5
+	if not is_finite(area) or area <= 1e-6:
+		return PackedVector2Array()
+	return PackedVector2Array([q0, q1, q2, q3])
 
 
 func make_polygon_obstacle_visual(
@@ -927,6 +1142,32 @@ func make_simple_light_state(
 	}
 
 
+func make_grid_alignment_state(
+	cell_size: float = 64.0,
+	snap_enabled: bool = true,
+	offset: Vector2 = Vector2.ZERO,
+	color: Color = Color(0.5, 0.55, 0.65, 0.7),
+	line_width: float = 1.0,
+	snap_strength: float = 0.1
+) -> Dictionary:
+	var safe_offset: Vector2 = sanitize_finite_vec2(offset, Vector2.ZERO)
+	return {
+		"schema": "fus.grid_alignment.config",
+		"version": 1,
+		"cell_size": clampf(sanitize_finite_float(cell_size, 64.0), 8.0, 4096.0),
+		"offset": [safe_offset.x, safe_offset.y],
+		"color": [
+			clampf(sanitize_finite_float(color.r, 0.5), 0.0, 1.0),
+			clampf(sanitize_finite_float(color.g, 0.55), 0.0, 1.0),
+			clampf(sanitize_finite_float(color.b, 0.65), 0.0, 1.0),
+			clampf(sanitize_finite_float(color.a, 0.7), 0.0, 1.0),
+		],
+		"line_width": clampf(sanitize_finite_float(line_width, 1.0), 0.1, 32.0),
+		"snap_enabled": snap_enabled,
+		"snap_strength": clampf(sanitize_finite_float(snap_strength, 0.1), 0.0, 1.0),
+	}
+
+
 func append_entity(
 	world: Dictionary,
 	floor_uid: String,
@@ -1017,10 +1258,30 @@ func find_entity_by_id(world: Dictionary, entity_id: String) -> Dictionary:
 	var entities_var: Variant = (entity_state_var as Dictionary).get("entities", null)
 	if not (entities_var is Array):
 		return {}
-	for raw_entity: Variant in entities_var as Array:
+	var ents: Array = entities_var as Array
+	for i: int in range(ents.size() - 1, -1, -1):
+		var raw_entity: Variant = ents[i]
 		if raw_entity is Dictionary and str((raw_entity as Dictionary).get("id", "")) == entity_id:
 			return raw_entity as Dictionary
 	return {}
+
+
+func suppress_entity_fallback_box(entity: Dictionary) -> bool:
+	if entity.is_empty():
+		return false
+	var transparent := Color(1.0, 1.0, 1.0, 0.0)
+	entity["fallback_color"] = transparent
+	var comps_var: Variant = entity.get("components", null)
+	if comps_var is Array and not (comps_var as Array).is_empty():
+		var c0_var: Variant = (comps_var as Array)[0]
+		if c0_var is Dictionary:
+			var state_var: Variant = (c0_var as Dictionary).get("state", null)
+			if state_var is Dictionary:
+				var st: Dictionary = state_var as Dictionary
+				st["fallback_color"] = transparent
+				st["show_fallback"] = false
+				return true
+	return false
 
 
 func append_entity_component(
@@ -1067,6 +1328,139 @@ func append_entity_component(
 
 	components.append(record)
 	return {"ok": true, "index": components.size() - 1, "replaced": false}
+
+
+func sanitize_module_value(v: Variant, depth: int = 0) -> Variant:
+	if depth > 32:
+		return null
+	match typeof(v):
+		TYPE_NIL, TYPE_BOOL, TYPE_INT, TYPE_STRING:
+			return v
+		TYPE_STRING_NAME, TYPE_NODE_PATH:
+			return str(v)
+		TYPE_FLOAT:
+			var f: float = float(v)
+			return f if is_finite(f) else 0.0
+		TYPE_ARRAY:
+			var out_arr: Array = []
+			for item: Variant in v as Array:
+				out_arr.append(sanitize_module_value(item, depth + 1))
+			return out_arr
+		TYPE_DICTIONARY:
+			var out_dict: Dictionary = {}
+			var d: Dictionary = v as Dictionary
+			for k: Variant in d.keys():
+				var ks: String = k if (k is String) else str(k)
+				out_dict[ks] = sanitize_module_value(d[k], depth + 1)
+			return out_dict
+		_:
+			return null
+
+
+func bounded_variant_size_estimate(val: Variant, depth: int = 0) -> int:
+	if depth > 32:
+		return -1
+	match typeof(val):
+		TYPE_STRING, TYPE_STRING_NAME, TYPE_NODE_PATH:
+			return 16 + str(val).length() * 4
+		TYPE_PACKED_BYTE_ARRAY:
+			return 16 + (val as PackedByteArray).size()
+		TYPE_PACKED_INT32_ARRAY:
+			return 16 + (val as PackedInt32Array).size() * 4
+		TYPE_PACKED_FLOAT32_ARRAY:
+			return 16 + (val as PackedFloat32Array).size() * 4
+		TYPE_PACKED_INT64_ARRAY:
+			return 16 + (val as PackedInt64Array).size() * 8
+		TYPE_PACKED_FLOAT64_ARRAY:
+			return 16 + (val as PackedFloat64Array).size() * 8
+		TYPE_PACKED_VECTOR2_ARRAY:
+			return 16 + (val as PackedVector2Array).size() * 16
+		TYPE_PACKED_VECTOR3_ARRAY:
+			return 16 + (val as PackedVector3Array).size() * 24
+		TYPE_PACKED_VECTOR4_ARRAY:
+			return 16 + (val as PackedVector4Array).size() * 32
+		TYPE_PACKED_COLOR_ARRAY:
+			return 16 + (val as PackedColorArray).size() * 32
+		TYPE_PACKED_STRING_ARRAY:
+			if depth + 1 > 32:
+				return -1
+			var total_ps: int = 16
+			for s: String in val as PackedStringArray:
+				total_ps += 16 + s.length() * 4
+			return total_ps
+		TYPE_DICTIONARY:
+			var total_d: int = 16
+			var d: Dictionary = val as Dictionary
+			for k: Variant in d.keys():
+				var kc: int = bounded_variant_size_estimate(k, depth + 1)
+				if kc < 0:
+					return -1
+				var vc: int = bounded_variant_size_estimate(d[k], depth + 1)
+				if vc < 0:
+					return -1
+				total_d += kc + vc
+			return total_d
+		TYPE_ARRAY:
+			var total_a: int = 16
+			for item: Variant in val as Array:
+				var ic: int = bounded_variant_size_estimate(item, depth + 1)
+				if ic < 0:
+					return -1
+				total_a += ic
+			return total_a
+		_:
+			return 256
+
+
+func can_fit_module_state(
+	world: Dictionary,
+	module_id: String,
+	version: int,
+	state: Dictionary,
+	max_world_bytes: int = MAX_WORLD_BUDGET_BYTES
+) -> bool:
+	var clean_id: String = sanitize_text(module_id).strip_edges()
+	if not is_valid_module_id(clean_id):
+		return false
+	if version <= 0 or version > 0x7fffffff:
+		return false
+	var entry_var_bytes: int = var_to_bytes(state).size()
+	if entry_var_bytes > MAX_MODULE_ENTRY_BYTES:
+		return false
+	var entry_bounded: int = bounded_variant_size_estimate(state)
+	if entry_bounded < 0 or entry_bounded > MAX_MODULE_ENTRY_BYTES:
+		return false
+
+	var mods_var: Variant = world.get("modules", {})
+	var mods_copy: Dictionary = (mods_var as Dictionary).duplicate(false) if (mods_var is Dictionary) else {"version": MODULE_STATE_VERSION, "entries": {}}
+	if not mods_copy.has("version"):
+		mods_copy["version"] = MODULE_STATE_VERSION
+	var raw_entries_copy: Variant = mods_copy.get("entries", {})
+	var entries_copy: Dictionary = (raw_entries_copy as Dictionary).duplicate(false) if (raw_entries_copy is Dictionary) else {}
+	if not entries_copy.has(clean_id) and entries_copy.size() >= MAX_MODULE_ENTRIES:
+		return false
+
+	var new_entry: Dictionary = {"version": version, "state": state}
+	entries_copy[clean_id] = new_entry
+	mods_copy["entries"] = entries_copy
+
+	if var_to_bytes(mods_copy).size() > MAX_MODULE_TOTAL_BYTES:
+		return false
+	var total_bounded: int = bounded_variant_size_estimate(mods_copy)
+	if total_bounded < 0 or total_bounded > MAX_MODULE_TOTAL_BYTES:
+		return false
+
+	if max_world_bytes > 0:
+		var cur_world_bytes: int = var_to_bytes(world).size()
+		var prev_entry_bytes: int = 0
+		var real_entries: Variant = (mods_var as Dictionary).get("entries", {}) if (mods_var is Dictionary) else {}
+		if real_entries is Dictionary and (real_entries as Dictionary).has(clean_id):
+			prev_entry_bytes = var_to_bytes((real_entries as Dictionary)[clean_id]).size()
+		var new_entry_bytes: int = var_to_bytes(new_entry).size()
+		if cur_world_bytes - prev_entry_bytes + new_entry_bytes > max_world_bytes:
+			return false
+
+	return true
 
 
 func set_module_state(

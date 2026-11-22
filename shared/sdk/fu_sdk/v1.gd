@@ -10,11 +10,14 @@ extends RefCounted
 ##   var builder = sdk.create_world_builder(session, 150.0)
 ## 同时也完全兼容 FuSdkScript.ImportSession.new(...) 与 FuSdkScript.WorldBuilder.new() 直接实例化。
 
-const SDK_VERSION: String = "1.1.0"
+const SDK_VERSION: String = "1.2.0"
 const ADAPTER_REL_PATH: String = "adapters/host_v1_adapter.gd"
 const DEV_FALLBACK_ADAPTER_PATH: String = "shared/sdk/fu_sdk/adapters/host_v1_adapter.gd"
+const DEV_FALLBACK_SDK_DIR: String = "shared/sdk/fu_sdk/"
 
 var _adapter_script: Script = null
+var _helper_adapter: RefCounted = null
+var _sub_script_cache: Dictionary = {}
 
 
 func _init(custom_adapter_script: Script = null) -> void:
@@ -52,16 +55,95 @@ func create_world_builder(
 	return builder
 
 
-func _load_adapter_from_outer_script() -> Script:
+func create_asset_publisher() -> RefCounted:
+	var scr: Script = _load_sdk_sub_script("modules/asset_publisher.gd")
+	return scr.new() if scr != null else null
+
+
+func create_entity_library_writer() -> RefCounted:
+	var scr: Script = _load_sdk_sub_script("modules/entity_library_writer.gd")
+	return scr.new() if scr != null else null
+
+
+func create_package_source() -> RefCounted:
+	var scr: Script = _load_sdk_sub_script("modules/package_source.gd")
+	return scr.new() if scr != null else null
+
+
+func create_snappy_codec() -> RefCounted:
+	var scr: Script = _load_sdk_sub_script("modules/snappy.gd")
+	return scr.new() if scr != null else null
+
+
+func coerce_bool(value: Variant, fallback: bool = false) -> bool:
+	var adapter: RefCounted = _get_helper_adapter()
+	if adapter != null:
+		return bool(adapter.coerce_bool(value, fallback))
+	if typeof(value) == TYPE_BOOL:
+		return value == true
+	return fallback
+
+
+func coerce_string(value: Variant, fallback: String = "") -> String:
+	var adapter: RefCounted = _get_helper_adapter()
+	if adapter != null:
+		return str(adapter.coerce_string(value, fallback))
+	if typeof(value) == TYPE_STRING:
+		return value as String
+	return fallback
+
+
+func coerce_int(value: Variant, fallback: int = 0) -> int:
+	var adapter: RefCounted = _get_helper_adapter()
+	if adapter != null:
+		return int(adapter.coerce_int(value, fallback))
+	if typeof(value) == TYPE_INT:
+		return int(value)
+	return fallback
+
+
+func coerce_float(value: Variant, fallback: float = 0.0) -> float:
+	var adapter: RefCounted = _get_helper_adapter()
+	if adapter != null:
+		return float(adapter.coerce_float(value, fallback))
+	if typeof(value) == TYPE_INT or typeof(value) == TYPE_FLOAT:
+		var f: float = float(value)
+		return f if is_finite(f) else fallback
+	return fallback
+
+
+func _get_helper_adapter() -> RefCounted:
+	if _helper_adapter == null:
+		_helper_adapter = create_adapter()
+	return _helper_adapter
+
+
+func _load_sdk_sub_script(rel_path: String) -> Script:
+	var clean_rel: String = rel_path.strip_edges()
+	if clean_rel.is_empty():
+		return null
+	if _sub_script_cache.has(clean_rel):
+		return _sub_script_cache[clean_rel] as Script
 	var outer_scr := get_script() as Script
 	if outer_scr != null and not outer_scr.resource_path.is_empty():
 		var clean_path: String = outer_scr.resource_path.split("::")[0]
-		var candidate: String = clean_path.get_base_dir().path_join(ADAPTER_REL_PATH)
+		var candidate: String = clean_path.get_base_dir().path_join(clean_rel)
 		if FileAccess.file_exists(candidate) or ResourceLoader.exists(candidate):
-			return load(candidate) as Script
-	if FileAccess.file_exists(DEV_FALLBACK_ADAPTER_PATH) or ResourceLoader.exists(DEV_FALLBACK_ADAPTER_PATH):
-		return load(DEV_FALLBACK_ADAPTER_PATH) as Script
+			var loaded := load(candidate) as Script
+			if loaded != null:
+				_sub_script_cache[clean_rel] = loaded
+				return loaded
+	var fallback_path: String = DEV_FALLBACK_SDK_DIR.path_join(clean_rel)
+	if FileAccess.file_exists(fallback_path) or ResourceLoader.exists(fallback_path):
+		var loaded_fb := load(fallback_path) as Script
+		if loaded_fb != null:
+			_sub_script_cache[clean_rel] = loaded_fb
+			return loaded_fb
 	return null
+
+
+func _load_adapter_from_outer_script() -> Script:
+	return _load_sdk_sub_script(ADAPTER_REL_PATH)
 
 
 class ImportSession extends RefCounted:
@@ -94,6 +176,65 @@ class ImportSession extends RefCounted:
 
 	func get_option(key: String, default_value: Variant = null) -> Variant:
 		return _options.get(key, default_value)
+
+	func get_bool_option(key: String, fallback: bool = false) -> bool:
+		if not _options.has(key):
+			return fallback
+		var raw: Variant = _options[key]
+		if _adapter != null:
+			return bool(_adapter.coerce_bool(raw, fallback))
+		if typeof(raw) == TYPE_BOOL:
+			return raw == true
+		return fallback
+
+	func get_string_option(key: String, fallback: String = "") -> String:
+		if not _options.has(key):
+			return fallback
+		var raw: Variant = _options[key]
+		if _adapter != null:
+			return str(_adapter.coerce_string(raw, fallback))
+		if typeof(raw) == TYPE_STRING:
+			return raw as String
+		return fallback
+
+	func get_int_option(key: String, fallback: int = 0) -> int:
+		if not _options.has(key):
+			return fallback
+		var raw: Variant = _options[key]
+		if _adapter != null:
+			return int(_adapter.coerce_int(raw, fallback))
+		if typeof(raw) == TYPE_INT:
+			return int(raw)
+		return fallback
+
+	func get_float_option(key: String, fallback: float = 0.0) -> float:
+		if not _options.has(key):
+			return fallback
+		var raw: Variant = _options[key]
+		if _adapter != null:
+			return float(_adapter.coerce_float(raw, fallback))
+		if typeof(raw) == TYPE_INT or typeof(raw) == TYPE_FLOAT:
+			var f: float = float(raw)
+			return f if is_finite(f) else fallback
+		return fallback
+
+	func sanitize_options(defaults: Dictionary) -> Dictionary:
+		var out: Dictionary = {}
+		for raw_key: Variant in defaults.keys():
+			var key: String = str(raw_key)
+			var def_val: Variant = defaults[raw_key]
+			match typeof(def_val):
+				TYPE_BOOL:
+					out[key] = get_bool_option(key, def_val == true)
+				TYPE_STRING:
+					out[key] = get_string_option(key, str(def_val))
+				TYPE_INT:
+					out[key] = get_int_option(key, int(def_val))
+				TYPE_FLOAT:
+					out[key] = get_float_option(key, float(def_val))
+				_:
+					out[key] = _options.get(key, def_val)
+		return out
 
 	func get_adapter() -> RefCounted:
 		return _adapter
@@ -152,9 +293,11 @@ class ImportSession extends RefCounted:
 		if _image_cache.has(url):
 			return str(_image_cache[url])
 
-		var effective_proxy: String = proxy
+		var effective_proxy: String = proxy.strip_edges()
 		if effective_proxy.is_empty() and _options.has("proxy"):
-			effective_proxy = str(_options.get("proxy", ""))
+			var raw_proxy: Variant = _options.get("proxy", null)
+			if typeof(raw_proxy) == TYPE_STRING:
+				effective_proxy = (raw_proxy as String).strip_edges()
 
 		var archive_res: Dictionary = {}
 		if _adapter != null:
@@ -178,13 +321,26 @@ class ImportSession extends RefCounted:
 	func ok_inspect(
 		source_path: String,
 		counts_override: Dictionary = {},
-		remote_assets: Dictionary = {}
+		remote_assets: Dictionary = {},
+		decoded_bytes: int = -1,
+		display_name: String = ""
 	) -> Dictionary:
 		if _adapter != null:
-			return _adapter.build_inspect_ok(source_path, counts_override, remote_assets)
+			return _adapter.build_inspect_ok(
+				source_path,
+				counts_override,
+				remote_assets,
+				decoded_bytes,
+				display_name
+			)
 		var fallback_sha256: String = ""
+		var source_bytes: int = 0
 		if not source_path.is_empty() and FileAccess.file_exists(source_path):
 			fallback_sha256 = FileAccess.get_sha256(source_path)
+			var f: FileAccess = FileAccess.open(source_path, FileAccess.READ)
+			if f != null:
+				source_bytes = maxi(0, int(f.get_length()))
+				f.close()
 		var counts: Dictionary = {
 			"records": 0,
 			"images": 0,
@@ -201,9 +357,18 @@ class ImportSession extends RefCounted:
 		}
 		for raw_key: Variant in counts_override.keys():
 			counts[str(raw_key)] = int(counts_override[raw_key])
+		var final_decoded_bytes: int = decoded_bytes if decoded_bytes >= 0 else source_bytes
+		var unique_images: int = maxi(int(counts.get("images", 0)), remote_assets.size())
+		var clean_name: String = display_name.strip_edges()
+		if clean_name.is_empty() and not source_path.is_empty():
+			clean_name = source_path.get_file().get_basename().strip_edges()
 		return {
 			"ok": true,
+			"name": clean_name,
 			"sha256": fallback_sha256,
+			"source_bytes": source_bytes,
+			"decoded_bytes": final_decoded_bytes,
+			"unique_images": unique_images,
 			"counts": counts,
 			"assets": remote_assets.duplicate(),
 		}
@@ -267,6 +432,7 @@ class WorldBuilder extends RefCounted:
 	var _preview_active: bool = false
 	var _entity_count: int = 0
 	var _used_sprite_refs: Dictionary = {}
+	var _entity_by_id: Dictionary = {}
 
 	static func set_default_adapter_script(adapter_script: Script) -> void:
 		if adapter_script != null:
@@ -319,6 +485,7 @@ class WorldBuilder extends RefCounted:
 		_preview_active = false
 		_entity_count = 0
 		_used_sprite_refs.clear()
+		_entity_by_id.clear()
 		_is_ready = true
 		_setup_result = {"ok": true}
 		return _setup_result
@@ -376,6 +543,15 @@ class WorldBuilder extends RefCounted:
 		else:
 			_layers = _adapter.get_floor_layer_map(_world, floor_uid)
 			_floor_layers[floor_uid] = _layers.duplicate()
+		return true
+
+	func rename_floor(floor_uid: String, new_name: String) -> bool:
+		if not _is_ready or _adapter == null or floor_uid.is_empty():
+			return false
+		var res: Dictionary = _adapter.rename_floor(_world, floor_uid, new_name)
+		if not bool(res.get("ok", false)):
+			_warn("重命名楼层失败（%s）：%s" % [floor_uid, str(res.get("reason", "unknown"))])
+			return false
 		return true
 
 	func add_layer(
@@ -612,6 +788,107 @@ class WorldBuilder extends RefCounted:
 	) -> String:
 		return add_polygon_obstacle(source_id, name, center_src, polygons_src, "air", false, enabled, layer_uid_override)
 
+	func extrude_segment_to_quad(
+		p0: Vector2,
+		p1: Vector2,
+		half_width: float = 6.0,
+		min_length: float = 0.5
+	) -> PackedVector2Array:
+		if _adapter == null:
+			return PackedVector2Array()
+		return _adapter.extrude_segment_to_quad(p0, p1, half_width, min_length)
+
+	func add_segment_obstacle(
+		source_id: String,
+		name: String,
+		p0_src: Vector2,
+		p1_src: Vector2,
+		half_width_src: float = 6.0,
+		kind: String = "wall",
+		is_open_door: bool = false,
+		enabled: bool = true,
+		layer_uid_override: String = ""
+	) -> String:
+		if not _is_ready or _adapter == null:
+			return ""
+		var label_hint: String = name if not name.is_empty() else source_id
+		if (
+			not is_finite(p0_src.x)
+			or not is_finite(p0_src.y)
+			or not is_finite(p1_src.x)
+			or not is_finite(p1_src.y)
+			or not is_finite(half_width_src)
+		):
+			_warn("障碍物“%s”包含非有限线段坐标，已跳过写入。" % label_hint)
+			return ""
+		var center_src: Vector2 = p0_src * 0.5 + p1_src * 0.5
+		if not is_finite(center_src.x) or not is_finite(center_src.y):
+			_warn("障碍物“%s”线段中心坐标溢出，已跳过写入。" % label_hint)
+			return ""
+		# 先平移至相对中点的局部坐标再挤出，彻底规避大坐标 (如 1e7) 下的 float32 ULP 精度坍缩。
+		var local_p0: Vector2 = p0_src - center_src
+		var local_p1: Vector2 = p1_src - center_src
+		var quad: PackedVector2Array = _adapter.extrude_segment_to_quad(local_p0, local_p1, half_width_src)
+		if quad.size() < 4:
+			_warn("障碍物“%s”线段退化或长度不足，已跳过写入。" % label_hint)
+			return ""
+		return add_polygon_obstacle(
+			source_id,
+			name,
+			center_src,
+			[quad],
+			kind,
+			is_open_door,
+			enabled,
+			layer_uid_override
+		)
+
+	func add_segment_wall(
+		source_id: String,
+		name: String,
+		p0_src: Vector2,
+		p1_src: Vector2,
+		half_width_src: float = 6.0,
+		enabled: bool = true,
+		layer_uid_override: String = ""
+	) -> String:
+		return add_segment_obstacle(source_id, name, p0_src, p1_src, half_width_src, "wall", false, enabled, layer_uid_override)
+
+	func add_segment_door(
+		source_id: String,
+		name: String,
+		p0_src: Vector2,
+		p1_src: Vector2,
+		half_width_src: float = 6.0,
+		is_open: bool = false,
+		enabled: bool = true,
+		layer_uid_override: String = ""
+	) -> String:
+		return add_segment_obstacle(source_id, name, p0_src, p1_src, half_width_src, "door", is_open, enabled, layer_uid_override)
+
+	func add_segment_window(
+		source_id: String,
+		name: String,
+		p0_src: Vector2,
+		p1_src: Vector2,
+		half_width_src: float = 6.0,
+		is_open: bool = false,
+		enabled: bool = true,
+		layer_uid_override: String = ""
+	) -> String:
+		return add_segment_obstacle(source_id, name, p0_src, p1_src, half_width_src, "window", is_open, enabled, layer_uid_override)
+
+	func add_segment_glass_wall(
+		source_id: String,
+		name: String,
+		p0_src: Vector2,
+		p1_src: Vector2,
+		half_width_src: float = 6.0,
+		enabled: bool = true,
+		layer_uid_override: String = ""
+	) -> String:
+		return add_segment_obstacle(source_id, name, p0_src, p1_src, half_width_src, "glass", false, enabled, layer_uid_override)
+
 	func add_text_note(
 		source_id: String,
 		text: String,
@@ -718,12 +995,50 @@ class WorldBuilder extends RefCounted:
 	) -> bool:
 		if not _is_ready or _adapter == null or entity_id.is_empty():
 			return false
-		var entity: Dictionary = _adapter.find_entity_by_id(_world, entity_id)
+		var entity: Dictionary = _lookup_entity(entity_id)
 		var res: Dictionary = _adapter.append_entity_component(entity, script_path, state, parked)
 		if not bool(res.get("ok", false)):
 			_warn("挂载组件失败（%s -> %s）：%s" % [entity_id, script_path, str(res.get("reason", "unknown"))])
 			return false
 		return true
+
+	func suppress_entity_fallback_box(entity_id: String) -> bool:
+		if not _is_ready or _adapter == null or entity_id.is_empty():
+			return false
+		var entity: Dictionary = _lookup_entity(entity_id)
+		return bool(_adapter.suppress_entity_fallback_box(entity))
+
+	func add_point_light(
+		source_id: String,
+		center_src: Vector2,
+		radius_world: float,
+		view_angle_deg: float = 360.0,
+		name: String = "Light",
+		hidden: bool = false,
+		enabled: bool = true,
+		size_src: Vector2 = Vector2(32.0, 32.0),
+		layer_uid_override: String = ""
+	) -> String:
+		if not _is_ready or _adapter == null:
+			return ""
+		var final_name: String = name if not name.strip_edges().is_empty() else "Light"
+		var entity_id: String = add_object_sprite(
+			source_id,
+			final_name,
+			center_src,
+			size_src,
+			"",
+			0.0,
+			Vector2.ONE,
+			hidden,
+			layer_uid_override,
+			false
+		)
+		if entity_id.is_empty():
+			return ""
+		suppress_entity_fallback_box(entity_id)
+		attach_simple_light(entity_id, radius_world, view_angle_deg, enabled)
+		return entity_id
 
 	func attach_unit_marker(entity_id: String) -> bool:
 		if not _is_ready or _adapter == null:
@@ -766,6 +1081,41 @@ class WorldBuilder extends RefCounted:
 			_warn("写入模块数据失败（%s）：%s" % [module_id, str(res.get("reason", "unknown"))])
 			return false
 		return true
+
+	func configure_grid_alignment(
+		cell_size: float = 64.0,
+		snap_enabled: bool = true,
+		offset: Vector2 = Vector2.ZERO,
+		color: Color = Color(0.5, 0.55, 0.65, 0.7),
+		line_width: float = 1.0,
+		snap_strength: float = 0.1
+	) -> bool:
+		if not _is_ready or _adapter == null:
+			return false
+		var state: Dictionary = _adapter.make_grid_alignment_state(
+			cell_size,
+			snap_enabled,
+			offset,
+			color,
+			line_width,
+			snap_strength
+		)
+		return set_module_state("grid_alignment", 1, state)
+
+	func sanitize_module_data(value: Variant) -> Variant:
+		if _adapter == null:
+			return value
+		return _adapter.sanitize_module_value(value)
+
+	func can_fit_module_state(
+		module_id: String,
+		version: int,
+		state: Dictionary,
+		max_world_bytes: int = 30 * 1024 * 1024
+	) -> bool:
+		if not _is_ready or _adapter == null:
+			return false
+		return bool(_adapter.can_fit_module_state(_world, module_id, version, state, max_world_bytes))
 
 	func build_result(source_record_count: int = 0, merged_wall_count: int = 0) -> Dictionary:
 		if not _is_ready or _adapter == null:
@@ -838,6 +1188,17 @@ class WorldBuilder extends RefCounted:
 			permission_state
 		)
 
+	func _lookup_entity(entity_id: String) -> Dictionary:
+		var cached: Variant = _entity_by_id.get(entity_id, null)
+		if cached is Dictionary and str((cached as Dictionary).get("id", "")) == entity_id:
+			return cached as Dictionary
+		if _adapter != null:
+			var found: Dictionary = _adapter.find_entity_by_id(_world, entity_id)
+			if not found.is_empty():
+				_entity_by_id[entity_id] = found
+			return found
+		return {}
+
 	func _commit_entity(
 		layer_uid: String,
 		preview_kind: String,
@@ -876,6 +1237,9 @@ class WorldBuilder extends RefCounted:
 			permission_state
 		)
 		_entity_count += 1
+		var entity_id: String = str(entity.get("id", ""))
+		if not entity_id.is_empty():
+			_entity_by_id[entity_id] = entity
 		if _preview_active and _session != null:
 			_adapter.preview_entity(_session.get_host(), entity, preview_kind)
-		return str(entity.get("id", ""))
+		return entity_id

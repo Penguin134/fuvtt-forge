@@ -8,7 +8,7 @@ func _load_sdk_script() -> Script:
 	var self_script := get_script() as Script
 	if self_script == null or self_script.resource_path.is_empty():
 		return null
-	var base_dir: String = self_script.resource_path.get_base_dir()
+	var base_dir: String = self_script.resource_path.split("::")[0].get_base_dir()
 	var packaged_path: String = base_dir.path_join(_SDK_PACKAGED_REL_PATH)
 	if FileAccess.file_exists(packaged_path) or ResourceLoader.exists(packaged_path):
 		return load(packaged_path) as Script
@@ -48,8 +48,8 @@ func prepare_import(path: String, options: Dictionary, host: RefCounted) -> Dict
 	if not bool(init_res.get("ok", false)):
 		return init_res
 
-	var _include_hidden: bool = bool(session.get_option("include_hidden", true))
-	var _proxy: String = str(session.get_option("proxy", ""))
+	var _include_hidden: bool = session.get_bool_option("include_hidden", true)
+	var _proxy: String = session.get_string_option("proxy", "")
 
 	# 推荐两阶段导入顺序（对齐官方 ImportBridge 预览流协议）：
 	# 阶段 1：先构建墙体/门窗/空气挖空/文字/矢量等轻量几何体并通知宿主完成几何预览。
