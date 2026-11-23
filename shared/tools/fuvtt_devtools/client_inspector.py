@@ -26,7 +26,7 @@ PCK_HEADER_FILE_BASE_V4 = 112
 BUILTIN_FOBR_ZIP_REL = "plugin_packages/fobr-world-import.zip"
 BUILD_IDENTITY_REL = "data/build_identity.json"
 
-# Steam / Practice Embedded PCK monitored contract files (v0.0.53 ~ v0.0.57+)
+# Steam / Practice Embedded PCK monitored contract files (v0.0.53 ~ v0.0.60+)
 CONTRACT_WATCH_FILES: tuple[str, ...] = (
     "project.binary",
     "services/plugins/session_plugins.gdc",
@@ -35,11 +35,15 @@ CONTRACT_WATCH_FILES: tuple[str, ...] = (
     "scenes/session/plugins/plugin_panel.gdc",
     "scenes/session/plugins/session_plugin_drop.gdc",
     "scenes/systems/world/world_defaults.gdc",
+    "scenes/systems/world/scene_repository.gdc",
+    "scenes/systems/world/world_module_state.gdc",
     "scenes/extension/desktop_feature_catalog.gdc",
     "scenes/board/networking/network_session.gdc",
     "services/storage_paths.gdc",
     "services/storage_bootstrap.gdc",
     "modules/obstacle_authoring/obstacle_shape_data.gdc",
+    "modules/scene_box/feature_scene_box.gdc",
+    "modules/scene_box/comp_scene_box.gdc",
 )
 
 # External non-PCK Steam install files monitored alongside FUS.exe
@@ -58,8 +62,12 @@ GIT_PRACTICE_WATCH_FILES: tuple[str, ...] = (
     "scenes/session/plugins/plugin_panel.gd",
     "scenes/session/plugins/session_plugin_drop.gd",
     "scenes/systems/world/world_defaults.gd",
+    "scenes/systems/world/scene_repository.gd",
+    "scenes/systems/world/world_module_state.gd",
     "scenes/extension/desktop_feature_catalog.gd",
     "modules/obstacle_authoring/obstacle_shape_data.gd",
+    "modules/scene_box/feature_scene_box.gd",
+    "modules/scene_box/comp_scene_box.gd",
     "plugin_packages/fobr_world_import/plugin.json",
 )
 

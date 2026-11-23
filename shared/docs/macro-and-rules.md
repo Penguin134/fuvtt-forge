@@ -3,14 +3,14 @@
 > [!WARNING]
 > **Playtest 内测阶段免责声明**  
 > 当前处于 Playtest 内测阶段，后续插件与模块接口可能存在变更。本文档基于官方源码库（只读核验）与本地 Steam 客户端实际解包验证沉淀。  
-> **现役实测验证基准**：`Practice` 主线 `v0.0.56`（Git `origin/codex/fuvtt-project-sync`，Commit `282aee64`，`2026-11-19`）/ Steam Playtest `v0.0.57`（Commit `3f20e8e`，`2026-11-20`）  
+> **现役实测验证基准**：`Practice` 主线 `v0.0.60`（Git `origin/codex/playtest-v060-20261122`，Commit `cc3d43a5`，`2026-11-22`）/ Steam Playtest `v0.0.60`（Commit `cc3d43a`，`2026-11-22`）  
 > **底盘引擎**：`Godot Engine v4.8.beta1.mono.official` (64-bit) + `.NET 10` CoreCLR  
-> **验证日期**：`2026-11-22`
+> **验证日期**：`2026-11-23`
 
 > [!IMPORTANT]
 > **官方仓库双代码线辨析（防止契约混用）**  
 > 官方源码库中并存两条世代相反的代码线：
-> 1. **现役生产主线 `Practice`（`origin/codex/fuvtt-project-sync` / Steam `v0.0.53` → `v0.0.57`）**：基于 Godot `4.8.beta1.mono` + C# `.NET 10` 的新一代重构线，外部插件唯一合法契约为 **`fus.session-plugin.v1`（`host_api = 1`, `scope = "session"`）**；
+> 1. **现役生产主线 `Practice`（`origin/codex/playtest-v060-20261122` / Steam `v0.0.53` → `v0.0.60`）**：基于 Godot `4.8.beta1.mono` + C# `.NET 10` 的新一代重构线，外部插件唯一合法契约为 **`fus.session-plugin.v1`（`host_api = 1`, `scope = "session"`）**；
 > 2. **已替代的早期原型线 `FUS-F2`（本地检出分支 `codex/post-dnd-followups`, Commit `ff4a1600`, `2026-10-06`, 回落版本号 `v0.1.80`, Godot `4.8-dev4` 非 Mono）**：早于 `Practice` 线约 1.5 个月，包含 `dnd_sdr`、`f2.feature_plugin.v1` 与 `HostBridge API v7`，**无法在当前 Steam 客户端加载**。  
 > 本文档第 1～5 节 100% 锚定**现役 `Practice` 主线**；第 6 节将旧 `FUS-F2` 线 `dnd_sdr` 的核心设计模式作为前瞻架构参考独立归档。
 
@@ -100,13 +100,13 @@ Fu vtt（`Practice` 线）的本地桌面世界采用强校验、增量递增的
 ```
 
 - **图层类型（`fus.floor_layers.v2`）**：支持 `"map"`、`"entity"`、`"obstacle"` 与 `"area"` 四类图层，默认 `locked = false`（详见 `shared/docs/desktop-and-scene-api.md`）。
-- **`world.modules` 分区配额（`world_module_state.gd`）**：当前版本为 **`version = 2`**（向下兼容 `v1`）；顶层最多 **`128`** 个模块条目，单条模块状态上限 **`6 MiB`**，整个 `modules` 分区总上限 **`8 MiB`**（整体 `.world` 封装受 `CampaignRecord.wrap` **`32 MiB`** 上限约束，导入器建议以 **`30 MiB`** 作为安全预算上限并预留 `2 MiB` 余量）。
+- **`world.modules` 分区配额（`world_module_state.gd`）**：当前版本为 **`version = 2`**（向下兼容 `v1`）；顶层最多 **`128`** 个模块条目，单条模块状态保守尺寸上界 **`16 MiB`**（`_bounded()` 标量估算），整个 `modules` 分区总上限 **`24 MiB`**（`_bounded()` 与 `var_to_bytes(raw).size() <= 24 MiB`，整体 `.world` 封装另受 `LocalWorldFiles.MAX_BYTES = 32 MiB` 上限约束，导入器建议以 **`30 MiB`** 作为安全预算上限并预留 `2 MiB` 余量）。
 
 ---
 
 ## 2. FOBR 容器格式与现役导入桥契约 (`.fobr` 与 `FOBR1`)
 
-现役 `Practice` 线唯一官方外部插件为 `plugin_packages/fobr_world_import/`（`version: "0.5.1"`, `schema: "fus.session-plugin.v1"`, `host_api = 1`, `scope = "session"`），由 C# 内核 `Practice.FobrWallKernel`、`ImportBridge`（`scenes/session/plugins/import_bridge.gd`）与插件 `entry.gd` 协同执行离线导入。
+现役 `Practice` 线唯一官方外部插件为 `plugin_packages/fobr_world_import/`（`version: "0.5.2"`, `schema: "fus.session-plugin.v1"`, `host_api = 1`, `scope = "session"`），由 C# 内核 `Practice.FobrWallKernel`、`ImportBridge`（`scenes/session/plugins/import_bridge.gd`）与插件 `entry.gd` 协同执行离线导入。
 
 ### 2.1 FOBR 文件物理二进制布局
 
@@ -155,9 +155,9 @@ def pack_fobr(data: dict, output_path: str) -> None:
   - `metadata["rodeo.owlbear.dynamic-fog/doors"]`：门窗多边形与开合状态；
   - `metadata["com.battle-system.smoke/blocking"]`：烟雾与遮光墙体。
 
-### 2.4 `v0.0.53` → `v0.0.57` 宿主导入桥增量演进
+### 2.4 `v0.0.53` → `v0.0.60` 宿主导入桥增量演进
 
-`fobr_world_import v0.5.1` 的 `plugin.json` 与 `entry.gd` 在 `v0.0.53` 至 `v0.0.57` 间保持零破坏性变更，宿主 `scenes/session/plugins/` 落地了 4 项增量改进：
+`fobr_world_import`（`v0.5.2`，`v0.0.60` 由 `v0.5.1` 小幅升级）的 `plugin.json` 与 `entry.gd` 在 `v0.0.53` 至 `v0.0.60` 间保持 `fus.session-plugin.v1` 契约向后兼容，宿主 `scenes/session/plugins/` 落地了以下增量改进（含 `v0.0.60` 新增多场景与 `16 MiB / 24 MiB` 模块配额升级）：
 
 1. **零长度门容错告警（`import_bridge.gd`）**：`decode_source()` 新增 `skipped_point_doors` 检查，自动调用 `warn()` 提示“已跳过 N 条起点和终点重合的门记录”；桌面备注标题由“素材提示”统一泛化为“导入提示”（`import_preview.gd` 后缀同步改为“详见桌面备注”），单次导入最多保留 `100` 条警告、写入备注前截断至 `7000` 字符。
 2. **SVG 栅格化与共享资产去重（`import_bridge.gd`）**：`archive_image()` 遇到 `<svg` 资产时自动调用 `Image.load_svg_from_buffer()` 转为 PNG，并通过 `SharedAssetStore.cs` 发布为共享 `asset://<sha256>.<ext>` 引用；导入失败时先检查目标目录存在性再仅清理本次创建的未发布文件。
@@ -192,10 +192,10 @@ def pack_fobr(data: dict, output_path: str) -> None:
 
 现役 `Practice` 线彻底采用核心底座与可选模块解耦架构，但**当前所有桌面运行时模块均为受信任的内置模块**（由 `scenes/extension/desktop_feature_catalog.gd` 代码声明，**存档不提供可执行脚本路径**），**尚未对外开放第三方运行时规则插件**。
 
-### 4.1 内置模块清单规模（9 核心 + 14 可选，共 23 项）
+### 4.1 内置模块清单规模（9 核心 + 21 可选，共 30 项）
 
 - **9 项核心底座（不可停用）**：`feature_networking`、`feature_component_sync`、`feature_edit_mode`、`feature_floor_system`、`feature_layer_stack`、`feature_obstacle_authoring`、`feature_debug_hooks`、`feature_component_library`、`feature_entity_library`。
-- **14 项内置可选模块（按战役显式启用，默认关闭）**：`image_flip`、`drag_movement`、`drawing`、`areas`、`room_chat`、`player_cursors`、`map_fog_editor`（`v0.0.56` 新增）、`grid_alignment`、`detached_sidebar`、`follow`、`portal`、`simple_fog`、`dice`、`initiative`。
+- **21 项内置可选模块（按战役显式启用，默认关闭）**：`campaign_time`、`image_flip`、`drag_movement`、`drawing`、`areas`、`room_chat`、`checklist`、`player_cursors`、`resource_pool`、`map_fog_editor`、`grid_alignment`、`detached_sidebar`、`character_roster`、`portal`、`backpack`、`dnd_opportunity`、`follow`、`simple_fog`、`dice`、`candidate_initiative`、`scene_box`。
 - **统一生命周期与状态持久化**：所有可选模块继承 `ExtensionBase`，通过 `prepare_module_state()`（树外预检）、`apply_module_state()` 与 `serialize_module_state()` 将纯数据状态写入 `world.modules`（`v2`）；通过精简版 `ExtensionContext` 登记组件、服务与 UI/网络 Slot（`network.actions`、`network.projections`、`network.presentations`、`save.readiness`、`ui.mode_bar`、`ui.mode_tools`、`ui.entity_actions`、`ui.canvas_actions`、`ui.sidebar_rail`）。
 
 ### 4.2 骰子、先攻与区域模块现状
@@ -208,9 +208,9 @@ def pack_fobr(data: dict, output_path: str) -> None:
 
 ### 4.3 D&D 规则集、宏系统与角色卡当前状态
 
-- 在现役 `Practice` 线的 `docs/TODO.md` 中，**“传送门、DND、快捷移动”仍处于“具体规则和交互待定”状态**；
-- 现役客户端**尚未实装内置宏执行引擎、角色卡系统、背包/资源池系统或第三方运行时规则插件 API**（`scenes/candidates/*` 下的 `comp_entity_note`、`comp_initiative`、`comp_resource_pool`、`comp_scene_box` 属停放/候选组件语义）；
-- 当前外部开发者面向 Steam `Practice` 客户端构建扩展的唯一受支持路径，是符合 **`fus.session-plugin.v1`（`host_api = 1`, `scope = "session"`）** 的离线场景/数据导入插件（详见 `shared/docs/plugin-lifecycle.md`）。若需持久化可复用的角色/怪物棋子模板及完整 TRPG 数值摘要，应遵循以下两项现役集成模式（可直接使用 `fu_sdk` v1.2.0 内置工具与 `modules/entity_library_writer.gd`）。
+- 虽然 `v0.0.60` 已在内置 `DesktopFeatureCatalog` 中包含 `dnd_opportunity`（D&D 角色卡与百科）、`backpack`、`resource_pool`、`character_roster`、`campaign_time`、`checklist` 与转正后的 `scene_box`（场景盒子，`modules/scene_box/comp_scene_box.gd`）等受信任内置可选模块，但 `docs/TODO.md` 中部分“传送门、DND、快捷移动”细节仍在演进；
+- 现役客户端**仍未向外部插件开放第三方运行时规则插件 API、外部宏执行引擎或运行时 UI/Action Slot 注入**；
+- 当前外部开发者面向 Steam `Practice` 客户端构建扩展的唯一受支持路径，依然是符合 **`fus.session-plugin.v1`（`host_api = 1`, `scope = "session"`）** 的离线场景/数据导入插件（详见 `shared/docs/plugin-lifecycle.md`）。若需持久化多场景、场景盒子、可复用角色/怪物棋子模板及完整 TRPG 数值摘要，请直接使用 `fu_sdk` `v1.3.0` 与 `modules/entity_library_writer.gd`。
 
 ### 4.4 `EntityLibraryStore` 素材库集成契约（`<root>/entity-library/`）
 
@@ -230,9 +230,9 @@ def pack_fobr(data: dict, output_path: str) -> None:
    - **公共外层必填键**：`version: 1`、`id`（32 位小写 hex，推荐用确定性命名空间 SHA-256 截断生成）、`name`（非空 `<= 256` 字符）、`kind`（`"folder" | "unit" | "preset"`）、`folder_id`（`""` 或无环路的 32 位小写 hex 父目录 ID）。非 `folder` 行另须提供 `reference`（`""` 或 `asset://...`）、`size`（`Vector2 >= Vector2(4, 4)`）与 `record: Dictionary`。
    - **默认推荐使用 `kind = "unit"`**：因 `ImportBridge.run()` 硬编码 `metadata.module_choices = []`（`simple_fog` 等可选模块默认未启用），而 `EntityLibraryStore.prepare_placement()` 会拒绝含未启用可选组件（如 `comp_simple_vision.gd`）的 `preset` 并报错 `preset_component_unavailable`；故外部导入角色/怪物推荐以 **`kind = "unit"`** 注册（`record.data` 含 9 键：`id, name, type: "generic", category: "library", size, color: Color.WHITE, sprite: ref, components: {"unit": {}}, selectable_in_select_mode: false`），若使用 `kind = "preset"`，其 `snapshot` 仅能包含核心必选组件（`comp_visual.gd`、`comp_permission.gd`、`comp_unit.gd`）。
 
-### 4.5 `world.modules` 渐进式 `6 MiB / 8 MiB / 30 MiB` 体积裁剪模式
+### 4.5 `world.modules` 渐进式 `16 MiB / 24 MiB / 30 MiB` 体积裁剪模式
 
-在现役 `Practice` 尚无原生角色卡表单的阶段，外部导入器可将完整 TRPG 属性块（AC、HP、CR/等级、属性调整值、速度、感官、传记等）写入 `world.modules.entries["<plugin_id>"]`（纯数据字典，需剔除 `NaN`/`Inf` 及超过 32 层的嵌套）。面对大型战役（数百名带 HTML 长传记的 NPC/PC），应采用**三级渐进预算裁剪**（每次检查 `var_to_bytes(entry_state).size() <= 6 MiB`、`var_to_bytes(world.modules).size() <= 8 MiB` 与 `var_to_bytes(world).size() <= 30 MiB`，也可调用 `WorldBuilder.can_fit_module_state()`）：
+在现役 `Practice` 尚未向第三方规则插件开放运行时的阶段，外部导入器可将完整 TRPG 属性块（AC、HP、CR/等级、属性调整值、速度、感官、传记等）写入 `world.modules.entries["<plugin_id>"]`（纯数据字典，需剔除 `NaN`/`Inf` 及超过 32 层的嵌套）。面对大型战役（数百名带 HTML 长传记的 NPC/PC），应采用**三级渐进预算裁剪**（结合 `world_module_state.gd` `_bounded()` 估算与 `var_to_bytes()`，校验单条目 `<= 16 MiB`、`world.modules <= 24 MiB` 与整包 `world <= 30 MiB`，也可直接调用 `fu_sdk v1.3.0` 的 `WorldBuilder.can_fit_module_state()`）：
 
 1. **Level 0（完整档案）**：剥离 HTML 标签并按单条上限截断传记（如 `<= 2048` 字符），保留完整属性与扩展摘要；
 2. **Level 1（裁剪传记）**：清空所有角色/怪物的 `biography` 长文本，保留核心数值与结构化摘要，并记 `session.add_warning()`；
@@ -254,7 +254,7 @@ def pack_fobr(data: dict, output_path: str) -> None:
 
 > [!CAUTION]
 > **严禁用于当前 Steam `Practice` 客户端！**  
-> 本节内容源自已被替代的早期原型线 `FUS-F2`（`codex/post-dnd-followups`, Commit `ff4a1600`, `v0.1.80`, `plugin_packages/dnd_sdr` `v0.2.0-test.33`）。其清单格式 `f2.feature_plugin.v1`、逻辑资源桥 `HostBridge API v7` 及全部运行时 Provider 钩子在现役 `Practice` 客户端（`v0.0.56`/`v0.0.57`）中**均不存在**，切勿直接编写依赖这些接口的生产插件。本节仅提炼官方曾验证过的规则插件架构范式，供未来 `Practice` 主线开放第三方规则插件时作为前瞻设计参考。
+> 本节内容源自已被替代的早期原型线 `FUS-F2`（`codex/post-dnd-followups`, Commit `ff4a1600`, `v0.1.80`, `plugin_packages/dnd_sdr` `v0.2.0-test.33`）。其清单格式 `f2.feature_plugin.v1`、逻辑资源桥 `HostBridge API v7` 及全部运行时 Provider 钩子在现役 `Practice` 客户端（`v0.0.60`）中**均不存在**，切勿直接编写依赖这些接口的生产插件。本节仅提炼官方曾验证过的规则插件架构范式，供未来 `Practice` 主线开放第三方规则插件时作为前瞻设计参考。
 
 ### 6.1 统一角色卡 / 怪物数据模型与 `{base, auto, override}` 三元组
 - 角色卡（`CompDndSDRCharacterCard`）与怪物（`CompDndSDRMonsterData`）共享 `SCHEMA_VERSION = 2` 统一结构，可派生数值（属性、调整值、豁免、AC、先攻、法术 DC 等）一律存为 **`{base, auto, override}`** 三元组，解析优先级严格固定为 `override > auto > base`——既保留导入原值 `base`、支持自动规则计算写入 `auto`，又允许玩家或 DM 手工覆写 `override` 而不破坏底层数据。

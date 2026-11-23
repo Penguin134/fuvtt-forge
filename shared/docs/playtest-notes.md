@@ -3,9 +3,9 @@
 > [!WARNING]
 > **Playtest 内测阶段免责声明**  
 > 当前处于 Steam Playtest 内测阶段，后续 Mod 接口可能存在变更。本文档基于本地 Steam 客户端解包与官方只读源码分支核验沉淀。  
-> **实测验证基准**：现役 `Practice` 主线 `v0.0.56`（Git `282aee64`，`2026-11-19`）/ Steam Playtest `v0.0.57`（Commit `3f20e8e`，`2026-11-20`）  
+> **实测验证基准**：现役 `Practice` 主线 `v0.0.60`（Git `origin/codex/playtest-v060-20261122`，`cc3d43a5`，`2026-11-22`）/ Steam Playtest `v0.0.60`（Commit `cc3d43a`，`2026-11-22`）  
 > **底盘引擎**：`Godot Engine v4.8.beta1.mono.official` (64-bit) + `.NET 10 CoreCLR` (`Practice.dll`)  
-> **验证日期**：`2026-11-22`
+> **验证日期**：`2026-11-23`
 
 ---
 
@@ -15,26 +15,26 @@
 
 | 维度 | 现役生产主线：`Practice`（Steam Playtest 真实主线） | 早期已替代原型线：`FUS-F2`（仅供前瞻设计参考） |
 | :--- | :--- | :--- |
-| **Git 分支与时间** | `origin/codex/fuvtt-project-sync`（`282aee64`，**`2026-11-19`**，`v0.0.56`）及 `origin/codex/fuvtt-v056-map-editors`；本机 Steam 已更新至同线 **`v0.0.57`（`3f20e8e`，`2026-11-20`）** | 本地检出 `HEAD`：`codex/post-dnd-followups`（`ff4a1600`，**`2026-10-06`**，回落版本 `v0.1.80`）——**早于 `Practice` 线约 1.5 个月** |
+| **Git 分支与时间** | `origin/codex/playtest-v060-20261122`（`cc3d43a5`，**`2026-11-22`**，`v0.0.60`，与本机 Steam 客户端 **精确一致**）；早期同线对照分支为 `origin/codex/fuvtt-project-sync`（`467be9e3` / `282aee64`，`v0.0.56`） | 本地检出 `HEAD`：`codex/post-dnd-followups`（`ff4a1600`，**`2026-10-06`**，回落版本 `v0.1.80`）——**早于 `Practice` 线约 1.5 个月** |
 | **引擎与原生栈** | **Godot `4.8.beta1.mono`** + **`.NET 10 CoreCLR`**（`Practice.csproj` → `Practice.dll`） | **Godot `4.8-dev4` 非 Mono** + 3 个 C++ GDExtension（`native/fus_file_commit`、`fus_history_geometry`、`fus_surfacebox`）+ 独立 `.NET 8 NativeAOT` 骰子子进程 |
 | **外部插件契约** | **`fus.session-plugin.v1`**（`host_api = 1`，`scope = "session"`），离线 `RefCounted` 会话导入器，由 C# `services/plugins/PluginPackageJob.cs` 强校验 | `f2.feature_plugin.v1`（`HostBridge.API_VERSION = 7`），支持外部运行时桌面 `FeatureBase`（如 `plugin_packages/dnd_sdr`），全 GDScript `FeaturePluginCatalog` 事务管理 |
 | **插件存储布局** | `FUS_Data/session_plugins/`（`registry.json` + `packages/<id>/<zip_sha256>/` + `cache/<id>/`） | `FUS_Data/plugins/`（`plugin_manifests.json` + `plugins/<id>/` + `_generation_store/`） |
 | **本仓库定位** | **唯一生产目标线**：`fu_sdk`、`mods/_template/`、`shared/tools/` 100% 锚定此线 | **严禁生成其生产脚手架**：仅将 `dnd_sdr` 等精华设计归档至文档前瞻参考节，不用于当前 Steam 客户端 |
 
 > [!CAUTION]
-> **官方源码仓只读红线**：通过 `.env.local` 配置 `FUS_REPO_DIR` / `FUS_SOURCE_REF=origin/codex/fuvtt-project-sync` 时，所有工具与开发者仅允许执行只读查询（如 `git -C <FUS_REPO_DIR> show <ref>:<path>`），**严禁对 `<FUS_REPO_DIR>` 执行文件写入或 `git checkout`**。
+> **官方源码仓只读红线**：通过 `.env.local` 配置 `FUS_REPO_DIR` / `FUS_SOURCE_REF=origin/codex/playtest-v060-20261122` 时，所有工具与开发者仅允许执行只读查询（如 `git -C <FUS_REPO_DIR> show <ref>:<path>`），**严禁对 `<FUS_REPO_DIR>` 执行文件写入或 `git checkout`**。
 
 ---
 
-## 2. 当前基准 Playtest 客户端与 `v0.0.53` → `v0.0.57` 演进记录
+## 2. 当前基准 Playtest 客户端与 `v0.0.53` → `v0.0.60` 演进记录
 
 ### 2.1 基准环境参数
 
 | 配置项 | 实测具体参数 | 来源与定位依据 |
 | :--- | :--- | :--- |
 | **Steam App ID** | `3177780` (Fu vtt Playtest) | Steam 注册信息 |
-| **Steam 线上客户端版本** | `v0.0.57`（Commit `3f20e8e`，`2026-11-20`） | 解包 `<FUVTT_INSTALL_DIR>/FUS.exe` 内 `data/build_identity.json` |
-| **官方源码对照基线** | `v0.0.56`（Git `282aee64`，`2026-11-19`） | `origin/codex/fuvtt-project-sync` |
+| **Steam 线上客户端版本** | `v0.0.60`（Commit `cc3d43a`，`2026-11-22`，PCK `2,799` 项） | 解包 `<FUVTT_INSTALL_DIR>/FUS.exe` 内 `data/build_identity.json` |
+| **官方源码对照基线** | `v0.0.60`（Git `cc3d43a5`，`2026-11-22`） | `origin/codex/playtest-v060-20261122` |
 | **底盘引擎与运行时** | `Godot Engine v4.8.beta1.mono.official` + `.NET 10` (`net10.0`) | `Practice.csproj`、`Practice.runtimeconfig.json` |
 | **核心 C# 业务程序集** | `data_Practice_windows_x86_64/Practice.dll` | 客户端安装目录 |
 | **本地运行数据目录** | `FUS_Data/`（含 `.fus-storage.json`、`session_plugins/`、`local_desktop/`） | `services/platform_runtime.gd`、`services/storage_bootstrap.gd` |
@@ -46,9 +46,22 @@
    - `plugin_import.gd`：文件选择框接入统一 `WindowPopupOwner`（`PopupOwner.attach`），将 `acquire_import()` 租约申请延迟至用户真正选定文件进入 `begin_file()` 后，消除打开选择器期间长期锁死插件服务的缺陷。
    - `import_bridge.gd`：`decode_source()` 新增 `skipped_point_doors` 零长度门跳过告警，失败路径补充已创建资产与目标目录清理守卫。
    - `session_plugin_drop.gd`：原生文件拖拽命中坐标改走 `DesktopToolPointer.client_to_viewport()`，修复 HiDPI / 缩放视口下的偏移。
-3. **内置桌面模块扩容（9 核心 + 14 可选，共 23 项）**：
-   - `scenes/extension/desktop_feature_catalog.gd` 由 `v0.0.53` 的 **9 核心 + 13 可选** 扩充为 `v0.0.56` 的 **9 核心 + 14 可选**：新增第 14 个内置可选模块 **`map_fog_editor`**（`res://modules/map_fog_editor/feature_map_fog_editor.tscn`，并在 `Practice.csproj` 编入 `modules/map_fog_editor/*.cs`）。
-   - `room_chat` 网络协议版本由 `3` 升至 `4`；`drag_movement` 显示名调整为 `"角色拖拽（匀速）"`。
+3. **内置桌面模块扩容**：`scenes/extension/desktop_feature_catalog.gd` 由 `v0.0.53` 的 9 核心 + 13 可选扩充为 `v0.0.56` 的 9 核心 + 14 可选（新增 `map_fog_editor`）。
+
+### 2.3 `v0.0.57` → `v0.0.60` (`cc3d43a5`, `2026-11-22`) 真实变动（场景系统上线）
+
+1. **统一常驻多场景空间分区模型（`scenes/systems/world/scene_repository.gd` & `modules/scene_box/`）**：
+   - 底层 `fus.practice.world`（`v3`）、`catalog.floors`（`<= 512`）、`fus.floor_layers.v2`、`entity_state`（`v3`）与 `members` 保持单一常驻底层不变；若未提供 `world.modules.entries["scene_box"]`，`DesktopWorldState` 自动将全部楼层绑定至默认 `"主场景"`（旧单场景存档 100% 兼容）。
+   - 多场景目录（`<= 64` 场景）与楼层归属分区持久化在 **`world.modules.entries["scene_box"]`**（`version = 1`, `schema_version = 2`），且在恢复与启用期触发重要耦合：宿主通过 `scene_repository.scene_for_floor(catalog.active_floor_uid)` 反推当前场景，因此 **`catalog.active_floor_uid` 必须归属 `host_active_scene_uid`**。即使 `ImportBridge.run()` 默认设置 `module_choices = []`，`DesktopWorldState` 仍载入该目录且 `FeatureManager.capture_persistent_state()` 会在存盘时无损保留。
+   - 原候选组件 `scenes/candidates/scene_box/comp_scene_box.gd` 毕业为正式模块 **`res://modules/scene_box/comp_scene_box.gd`**（固定 1:1 正方形 `[72, 256]` 默认 `96x96`，`entity_type != "map"`，联同 `BoardToken.SCENE_BOX_CONFLICTS` 14 个互斥组件及 `image_flip` vs `obstacle/area` 互斥校验）。
+2. **`world.modules` 限额扩容与精确估计（`world_module_state.gd`）**：
+   - 单条目上限 **`6 MiB` → `16 MiB`**，模块分区总上限 **`8 MiB` → `24 MiB`**（`.world` 整包 `LocalWorldFiles.MAX_BYTES = 32 MiB` 不变）；`_bounded()` 针对 `NIL`/`BOOL`/`INT`/`FLOAT`/`VECTOR2`/`RECT2`..`PROJECTION` 下调保守开销（`8..80 B`）。
+3. **内置可选模块扩充至 30 项（`9 核心 + 21 可选`）**：
+   - `DesktopFeatureCatalog` 新增/转正 `campaign_time`、`checklist`、`resource_pool`、`character_roster`、`backpack`、`dnd_opportunity` 与 **`scene_box`**（`optional_entries()` 共 21 项）。
+4. **其余增量**：
+   - 内置 `fobr_world_import` 升至 `v0.5.2`（`import_bridge.gd` 新增 `skipped_point_strokes` 零长度线段告警）；
+   - `WorldSnapshot.prepare_catalog` 接受可选 `floor_visits` 字典；`EntityStateCodec` 允许 `parked: true` 组件附带 `manual: bool` 标志；
+   - `fu_sdk` 升级至 **`v1.3.0`** 提供完整 `Scene >> Floor >> Layer` 与 `Scene Box` 接口并修复跨楼层 `layer_uid_override` 的 `world.members` 归属。
 
 ---
 
@@ -75,13 +88,13 @@ $$\text{Physical File Offset} = \text{PCK\_START} + \text{FILE\_BASE} + \text{EN
 
 ## 4. 现役 `Practice` 扩展体系“内外双轨隔离”现状
 
-经 `origin/codex/fuvtt-project-sync` 源码与 `docs/extension-source.json` 核实，现役 `Practice` 线从早期 FUS 快照精简移植了 `ExtensionBase` / `ExtensionContext` / `SlotRegistry` / `HookBus` / `DesktopFeatureCatalog` 底座，但仍保持严格的**“内外双轨隔离”**：
+经 `origin/codex/playtest-v060-20261122` 源码与 `docs/extension-source.json` 核实，现役 `Practice` 线从早期 FUS 快照精简移植了 `ExtensionBase` / `ExtensionContext` / `SlotRegistry` / `HookBus` / `DesktopFeatureCatalog` 底座，但仍保持严格的**“内外双轨隔离”**：
 
 1. **外部唯一开放动态加载轨（`session_plugins`）**：
    - 契约固定为 `fus.session-plugin.v1`（`host_api = 1`、`scope = "session"`），挂载于 `FUS_Data/session_plugins/`。
    - 仅在会话管理页触发导入时于 `WorkerThreadPool` 瞬态实例化 `RefCounted`，产出静态 `.world` 存档后即释放。
 2. **内部桌面运行时模块底座（`DesktopFeatureCatalog`，静态封闭）**：
-   - `scenes/extension/desktop_feature_catalog.gd` 硬编码 **9 核心 + 14 可选** 内置模块（`res://modules/...`），不扫描任何外部目录。
+   - `scenes/extension/desktop_feature_catalog.gd` 硬编码 **9 核心 + 21 可选**（共 30 项）内置模块（`res://modules/...`、`res://scenes/...`），不扫描任何外部目录。
    - 全仓 `ProjectSettings.load_resource_pack` 调用次数为 **0**，不支持第三方 `.pck` 动态挂载。
 3. **Steam 创意工坊（`ISteamUGC`）与联机模块白名单**：
    - `scenes/board/networking/steam_runtime.gd` 仅封装账号、好友、大厅与 `SteamMultiplayerPeer` P2P 传输，**`ISteamUGC` 相关调用为 0**。
@@ -93,7 +106,7 @@ $$\text{Physical File Offset} = \text{PCK\_START} + \text{FILE\_BASE} + \text{EN
 
 ### 5.1 构建期自动内嵌防腐层（`shared/sdk/fu_sdk/`）
 
-- 由于无创意工坊前置依赖机制，所有业务插件统一面向 `shared/sdk/fu_sdk/v1.gd`（`v1.2.0`）及其 `modules/` 可复用子模块编程；`fuvtt_cli.py build` 在打包期自动将 `shared/sdk/fu_sdk/` 嵌入每个插件 ZIP 的 `lib/fu_sdk/`。
+- 由于无创意工坊前置依赖机制，所有业务插件统一面向 `shared/sdk/fu_sdk/v1.gd`（`v1.3.0`）及其 `modules/` 可复用子模块编程；`fuvtt_cli.py build` 在打包期自动将 `shared/sdk/fu_sdk/` 嵌入每个插件 ZIP 的 `lib/fu_sdk/`。
 - 当宿主升级底层格式时，仅需单点修改 `shared/sdk/fu_sdk/adapters/host_v1_adapter.gd` 并运行 `build --all`。
 
 ### 5.2 Steam PCK + Git 源码双源金丝雀巡检
@@ -105,8 +118,8 @@ $$\text{Physical File Offset} = \text{PCK\_START} + \text{FILE\_BASE} + \text{EN
 python shared/tools/fuvtt_cli.py inspect-client --extract --source both
 ```
 
-- **Steam 轨**监控 `data/build_identity.json`、`data_Practice_windows_x86_64/Practice.dll`、`FUS_Data/.fus-storage.json` 及 PCK 内关键 `.gdc`（含 `session_plugins.gdc`、`plugin_import.gdc`、`import_bridge.gdc`、`session_plugin_drop.gdc`、`storage_paths.gdc`、`storage_bootstrap.gdc`、`obstacle_shape_data.gdc`、`world_defaults.gdc`）。
-- **Git 只读轨**通过 `git -C <FUS_REPO_DIR> show <FUS_SOURCE_REF>:<path>` 提取 `Practice.csproj`、`PluginPackageJob.cs`、`session_plugins.gd`、`import_bridge.gd`、`desktop_feature_catalog.gd`、`fobr_world_import/plugin.json` 等源码指纹，直接输出 Steam 线上版 vs Git 源码版代差报告。
+- **Steam 轨**监控 `data/build_identity.json`、`data_Practice_windows_x86_64/Practice.dll`、`FUS_Data/.fus-storage.json` 及 PCK 内关键 `.gdc`（含 `session_plugins.gdc`、`plugin_import.gdc`、`import_bridge.gdc`、`session_plugin_drop.gdc`、`storage_paths.gdc`、`storage_bootstrap.gdc`、`obstacle_shape_data.gdc`、`world_defaults.gdc`、`scene_repository.gdc`、`world_module_state.gdc`、`feature_scene_box.gdc`、`comp_scene_box.gdc`）。
+- **Git 只读轨**通过 `git -C <FUS_REPO_DIR> show <FUS_SOURCE_REF>:<path>` 提取 `Practice.csproj`、`PluginPackageJob.cs`、`session_plugins.gd`、`import_bridge.gd`、`scene_repository.gd`、`world_module_state.gd`、`desktop_feature_catalog.gd`、`modules/scene_box/{feature,comp}_scene_box.gd`、`fobr_world_import/plugin.json` 等源码指纹，直接输出 Steam 线上版 vs Git 源码版代差报告。
 
 ### 5.3 Godot 4.8-beta1 Mono 真机无头冒烟验证（`verify-host`）
 
@@ -124,7 +137,7 @@ python shared/tools/fuvtt_cli.py verify-host <mod-name>
 ## 6. 已知限制、兼容性踩坑与环境配置规范
 
 1. **GDScript 字节码（`.gdc`）与 C# 程序集（`Practice.dll`）**：
-   - Steam PCK 中逻辑脚本以 Godot 4.8 `.gdc` 字节码分发，C# 核心编入 `Practice.dll`；而通过 `.env.local` 关联的 `<FUS_REPO_DIR>` (`origin/codex/fuvtt-project-sync`) 可直接只读查阅等价明文 `.gd` / `.cs` 源码。
+   - Steam PCK 中逻辑脚本以 Godot 4.8 `.gdc` 字节码分发，C# 核心编入 `Practice.dll`；而通过 `.env.local` 关联的 `<FUS_REPO_DIR>` (`origin/codex/playtest-v060-20261122`) 可直接只读查阅等价明文 `.gd` / `.cs` 源码。
 2. **UTF-8 BOM 行为边界**：
    - C# `PluginPackageJob.cs` 读取 `plugin.json` 与 `registry.json` 时会自动剥离 UTF-8 BOM；但本仓库所有受控源码、清单与文档一律保持 **UTF-8 无 BOM**，并在插件解析未知外部文本时主动剥离首字符 `0xFEFF`。
 3. **大体积几何与两阶段预览**：
@@ -133,8 +146,9 @@ python shared/tools/fuvtt_cli.py verify-host <mod-name>
    - 本地客户端、官方只读源码库与 Godot 控制台路径仅在未入库的 `.env.local` 中配置（`FUVTT_INSTALL_DIR`、`FUS_REPO_DIR`、`FUS_SOURCE_REF`、`GODOT_BIN`），受控代码、脚本与文档中统一使用 `<FUVTT_INSTALL_DIR>`、`<FUS_REPO_DIR>`、`<GODOT_BIN>` 占位符，零硬编码本机路径。
 5. **文档同步要求**：
    - 每次通过 `inspect-client --extract --source both` 发现契约变动并更新 `shared/docs/` 时，须同步更新文档顶部版本号、Commit 哈希与验证日期。
-6. **`ImportBridge`、`asset://` 与几何/素材库实机踩坑速查（`2026-11-22` 汇总）**：
+6. **`ImportBridge`、`asset://`、多场景恢复与素材库实机踩坑速查（`2026-11-23` 汇总）**：
    - **`inspect_import` 与 `ProbeAssets`**：`ImportBridge.inspect()` 会用 `result.assets.size()` 覆盖 `unique_images` 并将 `assets` 全量传给 `ProbeAssets`；本地/ZIP 图片绝不能放入 `result.assets`（仅放 `http://`/`https://` URL），并应提供 `source_bytes`、`decoded_bytes`、`unique_images` 与 `name`（详见 `shared/docs/plugin-lifecycle.md`）。
-   - **双输入源与默认行为**：客户端未开放 `FILE_MODE_OPEN_DIR`，需要同时支持归档与目录的插件应声明 `import_extensions: ["zip", "json"]`；注意 `ImportBridge.run()` 按选中文件名（如 `world.json` → `"world"`）命名战役，且硬编码 `metadata.module_choices = []`。
+   - **双输入源与默认行为**：客户端未开放 `FILE_MODE_OPEN_DIR`，需要同时支持归档与目录的插件应声明 `import_extensions: ["zip", "json"]`；注意 `ImportBridge.run()` 按选中文件名（如 `world.json` → `"world"`）命名战役，且硬编码 `metadata.module_choices = []`（但 `world.modules.entries["scene_box"]` 仍会在载入/保存时被 `DesktopWorldState` / `FeatureManager` 完整保留）。
+   - **多场景恢复强耦合**：当写入 `entries["scene_box"]` 时，宿主按 `scene_for_floor(catalog.active_floor_uid)` 解析初始场景；必须保证 `catalog.active_floor_uid` 归属 `host_active_scene_uid`，且场景盒子实体 `entity_type != "map"`、`xform.scale == Vector2.ONE`、无 `SCENE_BOX_CONFLICTS` 冲突组件（使用 `fu_sdk v1.3.0` 可自动满足）。
    - **`asset://` 与 `ImageHeader` 预检**：`asset://` 仅接受 `png`/`jpg`/`jpeg`/`webp`/`bmp`（限边长 `<= 32768`、总像素 `<= 134217728`），拒绝 `.svg` 与 `.gif`；解码前须做魔数与头部预检（用 `.get_string_from_ascii()` 测 `<svg`），将 `.bmp`/`.svg` 转为 `.png`、拒收 `.gif`，避免 Godot C++ `ERROR:` 日志。
-   - **大坐标 ULP、透明光源与素材库隔离**：2 点线段墙体须先相对中点局部化再挤出为 `>= 3` 顶点且 `|Area| >= 1e-12` 的闭合多边形，纯光源锚点须隐藏默认 `fallback_color` 方块（详见 `shared/docs/desktop-and-scene-api.md`）；`entity-library` 写入须过四重门控并链式传递 `.revision`，`world.modules` 须受 `6 MiB / 8 MiB / 30 MiB` 渐进裁剪（详见 `shared/docs/macro-and-rules.md`）。
+   - **大坐标 ULP、透明光源与素材库隔离**：2 点线段墙体须先相对中点局部化再挤出为 `>= 3` 顶点且 `|Area| >= 1e-12` 的闭合多边形，纯光源锚点须隐藏默认 `fallback_color` 方块（详见 `shared/docs/desktop-and-scene-api.md`）；`entity-library` 写入须过四重门控并链式传递 `.revision`，`world.modules` 须受 `16 MiB / 24 MiB / 30 MiB` 渐进裁剪（详见 `shared/docs/macro-and-rules.md`）。

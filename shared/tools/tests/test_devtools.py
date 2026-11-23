@@ -890,19 +890,18 @@ class HostVerifierTests(BaseDevtoolsTestCase):
     def test_analyze_godot_logs_detects_script_errors_and_leaks(self) -> None:
         clean_log = (
             "Godot Engine v4.8.beta1.mono\n"
-            "ERROR: .NET: Assemblies not found\n"
-            "   at: initialize (modules/mono/mono_gd/gd_mono.cpp:650)\n"
             "FUVTT_VERIFY_HOST PASS checks=18 scripts=3\n"
         )
         self.assertEqual(analyze_godot_logs(clean_log), [])
 
         dirty_log = (
+            "ERROR: .NET: Assemblies not found\n"
             "SCRIPT ERROR: Parse Error: Unexpected token\n"
             "ERROR: Failed loading resource: res://pkg/entry.gd\n"
             "WARNING: 2 ObjectDB instances leaked at exit\n"
         )
         findings = analyze_godot_logs(dirty_log)
-        self.assertEqual(len(findings), 3)
+        self.assertEqual(len(findings), 4)
 
     def test_analyze_godot_logs_catches_fatal_and_unicode_parse_error(self) -> None:
         findings = analyze_godot_logs(

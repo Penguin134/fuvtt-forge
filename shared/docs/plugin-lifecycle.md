@@ -2,10 +2,10 @@
 
 > [!WARNING]
 > **Playtest 内测阶段免责声明**  
-> 当前处于 Steam Playtest 内测阶段，后续 Mod 接口可能存在变更。本文档基于官方现役 `Practice` 主线源码（`origin/codex/fuvtt-project-sync`）与本地 Steam 客户端实测核验沉淀。  
-> **实测验证基准**：现役 `Practice` 主线 `v0.0.56`（Git `282aee64`）/ Steam Playtest `v0.0.57`（Commit `3f20e8e`）  
+> 当前处于 Steam Playtest 内测阶段，后续 Mod 接口可能存在变更。本文档基于官方现役 `Practice` 主线源码（`origin/codex/playtest-v060-20261122`）与本地 Steam 客户端实测核验沉淀。  
+> **实测验证基准**：现役 `Practice` 主线 `v0.0.60`（Git `cc3d43a5`）/ Steam Playtest `v0.0.60`（Commit `cc3d43a`）  
 > **底盘引擎**：`Godot Engine v4.8.beta1.mono.official` (64-bit) + `.NET 10 CoreCLR` (`Practice.dll`)  
-> **验证日期**：`2026-11-22`
+> **验证日期**：`2026-11-23`
 
 ---
 
@@ -227,8 +227,9 @@ scenes/session/plugins/plugin_import.gd 调用 load(_row.entry_path).new()
      }
      ```
 - **`ImportBridge.run()` 实测默认行为**：
-  - **战役名由选中文件名推导**：`ImportBridge.inspect()` / `run()` 会直接以选中文件名（去扩展名）作为战役标题（例如选择解压目录内的 `world.json` 时，宿主固定将活动名显示为 `"world"`）。插件应通过 `host.warn()` 告知用户，并将真实世界名称保留在 `world.modules` 与楼层名中。
-  - **内置可选模块默认关闭**：`ImportBridge.run()` 硬编码设置 `metadata.module_choices = []`，因此 `grid_alignment`、`simple_fog` 等模块即使已写入配置或组件，导入后仍需 GM 在战役设置中手动开启（插件应通过 `host.warn()` 提醒）。
+  - **战役名由选中文件名推导**：`ImportBridge.inspect()` / `run()` 会直接以选中文件名（去扩展名）作为战役标题（例如选择解压目录内的 `world.json` 时，宿主固定将活动名显示为 `"world"`）。插件应通过 `host.warn()` 告知用户，并将真实世界名称保留在 `world.modules` 与场景/楼层名中。
+  - **内置可选模块默认关闭但状态无损保留**：`ImportBridge.run()` 硬编码设置 `metadata.module_choices = []`，因此 `grid_alignment`、`simple_fog`、`scene_box` 等可选模块导入后在UI开关上默认未勾选；但对于 **`world.modules.entries["scene_box"]`**，`DesktopWorldState._restore_snapshot()` 仍会在载入世界时读取其场景目录与归属索引，`FeatureManager.capture_persistent_state()` 亦会在后续保存时保留所有未启用模块的持久化数据；其余交互能力（如 `grid_alignment` / `simple_fog` / 悬停进盒过场）需 GM 在战役设置中启用（插件可通过 `host.warn()` 提醒）。
+  - **内置 `fobr_world_import` 演变**：`v0.0.60` 起内置 `fobr_world_import` 升至 **`0.5.2`**（新增 `skipped_point_strokes` 零长度线段告警），且 `CampaignImageFiles.references()` 同时扫描 `comp_visual.gd`（`sprite_path`）与 `comp_scene_box.gd`（`cover_asset`，注意 `archived_references()` 仅检查 `comp_visual` 且 `source_info == {}`）。
 
 ### 3.2 外部安装、版本比较规则与本地调试工作流
 

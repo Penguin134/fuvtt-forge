@@ -10,7 +10,7 @@ extends RefCounted
 ##   var builder = sdk.create_world_builder(session, 150.0)
 ## 同时也完全兼容 FuSdkScript.ImportSession.new(...) 与 FuSdkScript.WorldBuilder.new() 直接实例化。
 
-const SDK_VERSION: String = "1.2.0"
+const SDK_VERSION: String = "1.3.0"
 const ADAPTER_REL_PATH: String = "adapters/host_v1_adapter.gd"
 const DEV_FALLBACK_ADAPTER_PATH: String = "shared/sdk/fu_sdk/adapters/host_v1_adapter.gd"
 const DEV_FALLBACK_SDK_DIR: String = "shared/sdk/fu_sdk/"
@@ -425,6 +425,8 @@ class WorldBuilder extends RefCounted:
 	var _floor_uid: String = ""
 	var _layers: Dictionary = {}
 	var _floor_layers: Dictionary = {}
+	var _layer_to_floor: Dictionary = {}
+	var _active_scene_uid: String = ""
 	var _source_units_per_cell: float = 150.0
 	var _source_to_world: float = 64.0 / 150.0
 	var _is_ready: bool = false
@@ -482,6 +484,9 @@ class WorldBuilder extends RefCounted:
 		_floor_uid = str(world_init["floor_uid"])
 		_layers = (world_init["layers"] as Dictionary).duplicate()
 		_floor_layers = {_floor_uid: _layers.duplicate()}
+		_layer_to_floor.clear()
+		_active_scene_uid = ""
+		_rebuild_layer_to_floor_index()
 		_preview_active = false
 		_entity_count = 0
 		_used_sprite_refs.clear()
@@ -499,6 +504,14 @@ class WorldBuilder extends RefCounted:
 	func get_world() -> Dictionary:
 		return _world
 
+	func get_source_to_world_scale() -> float:
+		return _source_to_world
+
+	func to_world_pos(pos_src: Vector2) -> Vector2:
+		if _adapter != null:
+			return _adapter.sanitize_finite_vec2(pos_src, Vector2.ZERO) * _source_to_world
+		return pos_src * _source_to_world
+
 	func get_active_floor_uid() -> String:
 		return _floor_uid
 
@@ -510,6 +523,7 @@ class WorldBuilder extends RefCounted:
 			var resolved: Dictionary = _adapter.get_floor_layer_map(_world, target_floor)
 			if not resolved.is_empty():
 				_floor_layers[target_floor] = resolved
+				_index_floor_layers(target_floor, resolved)
 				return str(resolved.get(kind, ""))
 		return ""
 
@@ -520,12 +534,17 @@ class WorldBuilder extends RefCounted:
 	) -> String:
 		if not _is_ready or _adapter == null:
 			return ""
+		if has_scenes_configured():
+			var target_scene: String = _active_scene_uid if not _active_scene_uid.is_empty() else get_entry_scene_uid()
+			return add_floor_to_scene(target_scene, name, color, false, activate)
 		var res: Dictionary = _adapter.create_floor(_world, name, color)
 		if not bool(res.get("ok", false)):
 			_warn("新建楼层失败（" + name + "）：" + str(res.get("reason", "unknown")))
 			return ""
 		var new_uid: String = str(res["floor_uid"])
-		_floor_layers[new_uid] = (res["layers"] as Dictionary).duplicate()
+		var layer_map: Dictionary = (res["layers"] as Dictionary).duplicate()
+		_floor_layers[new_uid] = layer_map
+		_index_floor_layers(new_uid, layer_map)
 		if activate:
 			set_active_floor(new_uid)
 		return new_uid
@@ -543,6 +562,12 @@ class WorldBuilder extends RefCounted:
 		else:
 			_layers = _adapter.get_floor_layer_map(_world, floor_uid)
 			_floor_layers[floor_uid] = _layers.duplicate()
+			_index_floor_layers(floor_uid, _layers)
+		if has_scenes_configured():
+			var owner_scene: String = _adapter.get_scene_for_floor(_world, floor_uid)
+			if not owner_scene.is_empty():
+				_adapter.set_active_scene(_world, owner_scene, floor_uid, true)
+				_active_scene_uid = owner_scene
 		return true
 
 	func rename_floor(floor_uid: String, new_name: String) -> bool:
@@ -582,6 +607,7 @@ class WorldBuilder extends RefCounted:
 			_warn("新建图层失败（" + name + "）：" + str(res.get("reason", "unknown")))
 			return ""
 		var new_layer_uid: String = str(res["layer_uid"])
+		_layer_to_floor[new_layer_uid] = target_floor
 		var normalized_kind: String = str(res["kind"])
 		if not _floor_layers.has(target_floor):
 			_floor_layers[target_floor] = _adapter.get_floor_layer_map(_world, target_floor)
@@ -591,6 +617,257 @@ class WorldBuilder extends RefCounted:
 			if target_floor == _floor_uid:
 				_layers[normalized_kind] = new_layer_uid
 		return new_layer_uid
+
+	func has_scenes_configured() -> bool:
+		if not _is_ready or _adapter == null:
+			return false
+		return bool(_adapter.has_scene_repository_state(_world))
+
+	func configure_entry_scene(
+		scene_name: String = "主场景",
+		initial_floor_name: String = "",
+		cover_asset: String = ""
+	) -> String:
+		if not _is_ready or _adapter == null:
+			return ""
+		var res: Dictionary = _adapter.configure_entry_scene_state(_world, scene_name, cover_asset)
+		if not bool(res.get("ok", false)):
+			_warn("配置入口场景失败：" + str(res.get("reason", "unknown")))
+			return ""
+		if bool(res.get("cover_sanitized", false)):
+			_warn("场景“%s”封面路径非法（仅允许已归档 asset:// 64位十六进制 PNG/JPG/WEBP/BMP），已重置为空。" % scene_name)
+		var entry_uid: String = str(res.get("entry_scene_uid", ""))
+		if not initial_floor_name.is_empty():
+			var default_fuid: String = str(res.get("default_floor_uid", _floor_uid))
+			if not default_fuid.is_empty():
+				rename_floor(default_fuid, initial_floor_name)
+		if _active_scene_uid.is_empty():
+			_active_scene_uid = entry_uid
+		_rebuild_layer_to_floor_index()
+		return entry_uid
+
+	func add_scene(
+		scene_name: String,
+		initial_floor_name: String = "1F",
+		floor_color: Color = Color(0.32, 0.56, 0.44),
+		cover_asset: String = "",
+		make_active: bool = true
+	) -> String:
+		if not _is_ready or _adapter == null:
+			return ""
+		var res: Dictionary = _adapter.create_scene(
+			_world,
+			scene_name,
+			initial_floor_name,
+			floor_color,
+			cover_asset,
+			make_active
+		)
+		if not bool(res.get("ok", false)):
+			_warn("新建场景失败（" + scene_name + "）：" + str(res.get("reason", "unknown")))
+			return ""
+		if bool(res.get("cover_sanitized", false)):
+			_warn("场景“%s”封面路径非法（仅允许已归档 asset:// 64位十六进制 PNG/JPG/WEBP/BMP），已重置为空。" % scene_name)
+		var scene_uid: String = str(res["scene_uid"])
+		var floor_uid: String = str(res["floor_uid"])
+		var layer_map: Dictionary = (res["layers"] as Dictionary).duplicate()
+		_floor_layers[floor_uid] = layer_map
+		_index_floor_layers(floor_uid, layer_map)
+		if make_active:
+			_active_scene_uid = scene_uid
+			_floor_uid = floor_uid
+			_layers = layer_map.duplicate()
+		elif _active_scene_uid.is_empty():
+			_active_scene_uid = get_entry_scene_uid()
+		return scene_uid
+
+	func set_active_scene(
+		scene_uid: String,
+		floor_uid: String = "",
+		mark_host_visited: bool = true
+	) -> bool:
+		if not _is_ready or _adapter == null or scene_uid.is_empty():
+			return false
+		var res: Dictionary = _adapter.set_active_scene(_world, scene_uid, floor_uid, mark_host_visited)
+		if not bool(res.get("ok", false)):
+			_warn("切换当前场景失败：" + str(res.get("reason", "unknown")))
+			return false
+		var resolved_floor: String = str(res.get("floor_uid", ""))
+		_active_scene_uid = scene_uid
+		_floor_uid = resolved_floor
+		if _floor_layers.has(resolved_floor):
+			_layers = (_floor_layers[resolved_floor] as Dictionary).duplicate()
+		else:
+			_layers = _adapter.get_floor_layer_map(_world, resolved_floor)
+			_floor_layers[resolved_floor] = _layers.duplicate()
+			_index_floor_layers(resolved_floor, _layers)
+		return true
+
+	func set_entry_scene(scene_uid: String) -> bool:
+		if not _is_ready or _adapter == null or scene_uid.is_empty():
+			return false
+		var res: Dictionary = _adapter.set_entry_scene(_world, scene_uid)
+		if not bool(res.get("ok", false)):
+			_warn("设置入口场景失败：" + str(res.get("reason", "unknown")))
+			return false
+		return true
+
+	func rename_scene(scene_uid: String, new_name: String) -> bool:
+		if not _is_ready or _adapter == null or scene_uid.is_empty():
+			return false
+		var res: Dictionary = _adapter.rename_scene(_world, scene_uid, new_name)
+		if not bool(res.get("ok", false)):
+			_warn("重命名场景失败（%s）：%s" % [scene_uid, str(res.get("reason", "unknown"))])
+			return false
+		return true
+
+	func set_scene_cover_asset(scene_uid: String, cover_asset: String) -> bool:
+		if not _is_ready or _adapter == null or scene_uid.is_empty():
+			return false
+		var res: Dictionary = _adapter.set_scene_cover_asset(_world, scene_uid, cover_asset)
+		if not bool(res.get("ok", false)):
+			_warn("设置场景封面失败（%s）：%s" % [scene_uid, str(res.get("reason", "unknown"))])
+			return false
+		if bool(res.get("cover_sanitized", false)):
+			_warn("场景“%s”封面引用非法（仅允许已归档 asset:// 64位十六进制 PNG/JPG/WEBP/BMP），已重置为空。" % scene_uid)
+		return true
+
+	func set_scene_host_view(
+		scene_uid: String,
+		camera_pos_src: Vector2,
+		camera_zoom: Vector2 = Vector2.ONE,
+		active_floor_uid: String = ""
+	) -> bool:
+		if not _is_ready or _adapter == null or scene_uid.is_empty():
+			return false
+		var res: Dictionary = _adapter.set_scene_host_view(
+			_world,
+			scene_uid,
+			to_world_pos(camera_pos_src),
+			camera_zoom,
+			active_floor_uid
+		)
+		if not bool(res.get("ok", false)):
+			_warn("保存场景视角失败（%s）：%s" % [scene_uid, str(res.get("reason", "unknown"))])
+			return false
+		return true
+
+	func get_entry_scene_uid() -> String:
+		if not _is_ready or _adapter == null:
+			return ""
+		return str(_adapter.get_entry_scene_uid(_world))
+
+	func get_active_scene_uid() -> String:
+		if not _is_ready or _adapter == null:
+			return ""
+		if has_scenes_configured():
+			var active_in_world: String = str(_adapter.get_active_scene_uid(_world))
+			if not active_in_world.is_empty():
+				return active_in_world
+		return _active_scene_uid
+
+	func get_scene_uids() -> Array[String]:
+		if not _is_ready or _adapter == null:
+			return []
+		var raw: Array[String] = _adapter.get_scene_uids(_world)
+		return raw
+
+	func add_floor_to_scene(
+		scene_uid: String,
+		floor_name: String,
+		color: Color = Color(0.28, 0.65, 0.40),
+		make_default: bool = false,
+		make_active: bool = false
+	) -> String:
+		if not _is_ready or _adapter == null or scene_uid.is_empty():
+			return ""
+		var res: Dictionary = _adapter.add_floor_to_scene(
+			_world,
+			scene_uid,
+			floor_name,
+			color,
+			make_default,
+			make_active
+		)
+		if not bool(res.get("ok", false)):
+			_warn("向场景追加楼层失败（%s -> %s）：%s" % [scene_uid, floor_name, str(res.get("reason", "unknown"))])
+			return ""
+		var floor_uid: String = str(res["floor_uid"])
+		var layer_map: Dictionary = (res["layers"] as Dictionary).duplicate()
+		_floor_layers[floor_uid] = layer_map
+		_index_floor_layers(floor_uid, layer_map)
+		if make_active:
+			_active_scene_uid = scene_uid
+			_floor_uid = floor_uid
+			_layers = layer_map.duplicate()
+		return floor_uid
+
+	func set_scene_default_floor(scene_uid: String, floor_uid: String) -> bool:
+		if not _is_ready or _adapter == null or scene_uid.is_empty():
+			return false
+		var res: Dictionary = _adapter.set_scene_default_floor(_world, scene_uid, floor_uid)
+		if not bool(res.get("ok", false)):
+			_warn("设置场景默认楼层失败：" + str(res.get("reason", "unknown")))
+			return false
+		return true
+
+	func move_floor_to_scene(
+		floor_uid: String,
+		target_scene_uid: String,
+		make_default: bool = false
+	) -> bool:
+		if not _is_ready or _adapter == null or floor_uid.is_empty() or target_scene_uid.is_empty():
+			return false
+		var res: Dictionary = _adapter.attach_existing_floor_to_scene(_world, target_scene_uid, floor_uid, make_default)
+		if not bool(res.get("ok", false)):
+			_warn("跨场景移动楼层失败（%s -> %s）：%s" % [floor_uid, target_scene_uid, str(res.get("reason", "unknown"))])
+			return false
+		if floor_uid == _floor_uid:
+			_active_scene_uid = target_scene_uid
+		return true
+
+	func get_scene_floor_uids(scene_uid: String = "") -> Array[String]:
+		if not _is_ready or _adapter == null:
+			return []
+		var target_scene: String = scene_uid if not scene_uid.is_empty() else get_active_scene_uid()
+		if target_scene.is_empty():
+			return []
+		return _adapter.get_scene_floors(_world, target_scene)
+
+	func get_scene_default_floor_uid(scene_uid: String = "") -> String:
+		if not _is_ready or _adapter == null:
+			return ""
+		var target_scene: String = scene_uid if not scene_uid.is_empty() else get_active_scene_uid()
+		if target_scene.is_empty():
+			return ""
+		return str(_adapter.get_scene_default_floor_uid(_world, target_scene))
+
+	func get_scene_for_floor(floor_uid: String = "") -> String:
+		if not _is_ready or _adapter == null:
+			return ""
+		var target_floor: String = floor_uid if not floor_uid.is_empty() else _floor_uid
+		if target_floor.is_empty():
+			return ""
+		return str(_adapter.get_scene_for_floor(_world, target_floor))
+
+	func get_scene_layer_uid(scene_uid: String, kind: String, floor_uid: String = "") -> String:
+		if not _is_ready or _adapter == null or scene_uid.is_empty():
+			return ""
+		var scene_floors: Array[String] = get_scene_floor_uids(scene_uid)
+		if scene_floors.is_empty():
+			return ""
+		var target_floor: String = floor_uid if not floor_uid.is_empty() else get_scene_default_floor_uid(scene_uid)
+		if target_floor.is_empty() or not (target_floor in scene_floors):
+			return ""
+		return get_layer_uid(kind, target_floor)
+
+	func get_floor_layers(floor_uid: String = "") -> Array:
+		if not _is_ready or _adapter == null:
+			return []
+		var target_floor: String = floor_uid if not floor_uid.is_empty() else _floor_uid
+		if target_floor.is_empty():
+			return []
+		return _adapter.get_floor_layers(_world, target_floor)
 
 	func begin_bounds_preview(total_items: int, source_bounds: Rect2) -> void:
 		if not _is_ready or _session == null or _adapter == null:
@@ -1073,6 +1350,92 @@ class WorldBuilder extends RefCounted:
 		var state: Dictionary = _adapter.make_simple_light_state(radius, view_angle_deg, enabled)
 		return attach_component(entity_id, _adapter.COMP_SIMPLE_LIGHT_SCRIPT, state, false)
 
+	func add_scene_box(
+		source_id: String,
+		name: String,
+		center_src: Vector2,
+		target_scene_uid: String,
+		side_cells: float = 1.5,
+		cover_asset: String = "",
+		preview_policy: String = "visited_unlock",
+		all_players_can_enter: bool = true,
+		owner_player_ids: Array = [],
+		hidden_from_players: bool = false,
+		locked: bool = false,
+		layer_uid_override: String = ""
+	) -> String:
+		if not _is_ready or _adapter == null:
+			return ""
+		var target_layer: String = layer_uid_override if not layer_uid_override.is_empty() else str(_layers.get("entity", ""))
+		if target_layer.is_empty():
+			_warn("创建场景盒子失败：目标图层为空。")
+			return ""
+		var owner_floor_uid: String = _resolve_floor_for_layer(target_layer)
+		var center_world: Vector2 = to_world_pos(center_src)
+		var safe_cells: float = side_cells if is_finite(side_cells) else 1.5
+		var side_world: float = safe_cells * _adapter.WORLD_UNITS_PER_CELL
+		var res: Dictionary = _adapter.append_scene_box_entity(
+			_world,
+			owner_floor_uid,
+			target_layer,
+			source_id,
+			name,
+			center_world,
+			target_scene_uid,
+			side_world,
+			cover_asset,
+			preview_policy,
+			all_players_can_enter,
+			owner_player_ids,
+			hidden_from_players,
+			locked
+		)
+		if not bool(res.get("ok", false)):
+			_warn("创建场景盒子失败（%s）：%s" % [name if not name.is_empty() else source_id, str(res.get("reason", "unknown"))])
+			return ""
+		if bool(res.get("cover_sanitized", false)):
+			_warn("场景盒子“%s”封面引用非法（仅允许已归档 asset:// 64位十六进制 PNG/JPG/WEBP/BMP），已重置为空。" % (name if not name.is_empty() else source_id))
+		var safe_cover: String = str(res.get("cover_asset", ""))
+		if not safe_cover.is_empty():
+			_used_sprite_refs[safe_cover] = true
+		_entity_count += 1
+		var entity_id: String = str(res.get("entity_id", ""))
+		var entity_var: Variant = res.get("entity", null)
+		if not entity_id.is_empty() and entity_var is Dictionary:
+			_entity_by_id[entity_id] = entity_var
+			if _preview_active and _session != null:
+				_adapter.preview_entity(_session.get_host(), entity_var as Dictionary, "object")
+		return entity_id
+
+	func attach_scene_box(
+		entity_id: String,
+		target_scene_uid: String,
+		cover_asset: String = "",
+		preview_policy: String = "visited_unlock",
+		all_players_can_enter: bool = true,
+		owner_player_ids: Array = []
+	) -> bool:
+		if not _is_ready or _adapter == null or entity_id.is_empty():
+			return false
+		var res: Dictionary = _adapter.attach_scene_box_to_entity(
+			_world,
+			entity_id,
+			target_scene_uid,
+			cover_asset,
+			preview_policy,
+			all_players_can_enter,
+			owner_player_ids
+		)
+		if not bool(res.get("ok", false)):
+			_warn("挂载场景盒子组件失败（%s）：%s" % [entity_id, str(res.get("reason", "unknown"))])
+			return false
+		if bool(res.get("cover_sanitized", false)):
+			_warn("场景盒子“%s”封面引用非法（仅允许已归档 asset:// 64位十六进制 PNG/JPG/WEBP/BMP），已重置为空。" % entity_id)
+		var safe_cover: String = str(res.get("cover_asset", ""))
+		if not safe_cover.is_empty():
+			_used_sprite_refs[safe_cover] = true
+		return true
+
 	func set_module_state(module_id: String, version: int, state: Dictionary) -> bool:
 		if not _is_ready or _adapter == null:
 			return false
@@ -1125,6 +1488,59 @@ class WorldBuilder extends RefCounted:
 		var archived_total: int = _session.get_archived_asset_count() if _session != null else 0
 		var asset_total: int = maxi(_used_sprite_refs.size(), archived_total)
 		return _adapter.build_prepare_ok(_world, asset_total, source_record_count, merged_wall_count)
+
+	func _index_floor_layers(floor_uid: String, layers_map: Dictionary) -> void:
+		if floor_uid.is_empty():
+			return
+		for raw_kind: Variant in layers_map.keys():
+			var uid: String = str(layers_map[raw_kind])
+			if not uid.is_empty():
+				_layer_to_floor[uid] = floor_uid
+
+	func _rebuild_layer_to_floor_index() -> void:
+		_layer_to_floor.clear()
+		var catalog_var: Variant = _world.get("catalog", null)
+		if not (catalog_var is Dictionary):
+			return
+		var layers_var: Variant = (catalog_var as Dictionary).get("layers", null)
+		if not (layers_var is Dictionary):
+			return
+		var layer_floors_var: Variant = (layers_var as Dictionary).get("floors", null)
+		if not (layer_floors_var is Array):
+			return
+		for raw_floor: Variant in layer_floors_var as Array:
+			if not (raw_floor is Dictionary):
+				continue
+			var fd: Dictionary = raw_floor as Dictionary
+			var fuid: String = str(fd.get("floor_uid", ""))
+			if fuid.is_empty():
+				continue
+			var rows_var: Variant = fd.get("layers", [])
+			if rows_var is Array:
+				var kind_map: Dictionary = {}
+				for raw_layer: Variant in rows_var as Array:
+					if raw_layer is Dictionary:
+						var lrow: Dictionary = raw_layer as Dictionary
+						var luid: String = str(lrow.get("layer_uid", ""))
+						var lkind: String = str(lrow.get("kind", ""))
+						if not luid.is_empty():
+							_layer_to_floor[luid] = fuid
+							if not lkind.is_empty() and not kind_map.has(lkind):
+								kind_map[lkind] = luid
+				if not _floor_layers.has(fuid) and not kind_map.is_empty():
+					_floor_layers[fuid] = kind_map
+
+	func _resolve_floor_for_layer(layer_uid: String) -> String:
+		if not layer_uid.is_empty():
+			var cached_floor: String = str(_layer_to_floor.get(layer_uid, ""))
+			if not cached_floor.is_empty():
+				return cached_floor
+			if _adapter != null:
+				var looked_up: String = str(_adapter.get_floor_for_layer(_world, layer_uid))
+				if not looked_up.is_empty():
+					_layer_to_floor[layer_uid] = looked_up
+					return looked_up
+		return _floor_uid
 
 	func _warn(message: String) -> void:
 		if _session != null:
@@ -1217,9 +1633,10 @@ class WorldBuilder extends RefCounted:
 	) -> String:
 		if layer_uid.is_empty():
 			return ""
+		var owner_floor_uid: String = _resolve_floor_for_layer(layer_uid)
 		var entity: Dictionary = _adapter.append_entity(
 			_world,
-			_floor_uid,
+			owner_floor_uid,
 			layer_uid,
 			source_id,
 			label,

@@ -2,10 +2,10 @@
 
 > [!WARNING]
 > **Playtest 内测阶段免责声明**  
-> 当前处于 Playtest 内测阶段，后续 mod 接口可能存在变更。本文档基于官方源码库 `Practice` 主线（远端分支 `origin/codex/fuvtt-project-sync`）与本机 Steam 客户端实机双源核实沉淀。  
-> **实测验证基准**：现役 `Practice` 主线 `v0.0.56`（Commit `282aee64`，`2026-11-19`）/ Steam Playtest 客户端 `v0.0.57`（Commit `3f20e8e`，`2026-11-20`）  
+> 当前处于 Playtest 内测阶段，后续 mod 接口可能存在变更。本文档基于官方源码库 `Practice` 主线（远端分支 `origin/codex/playtest-v060-20261122`）与本机 Steam 客户端实机双源核实沉淀。  
+> **实测验证基准**：现役 `Practice` 主线 `v0.0.60`（Commit `cc3d43a5`，`2026-11-22`）/ Steam Playtest 客户端 `v0.0.60`（Commit `cc3d43a`，`2026-11-22`）  
 > **底盘引擎**：`Godot Engine v4.8.beta1.mono.official` (64-bit) + `.NET 10 CoreCLR`  
-> **验证日期**：`2026-11-22`
+> **验证日期**：`2026-11-23`
 
 ---
 
@@ -53,8 +53,8 @@
 关键硬约束（来源 `scenes/systems/world/world_snapshot.gd` 与 `world_module_state.gd`）：
 - **实体数量上限**：`MAX_ENTITIES = 10000`。
 - **规范叠放顺序**：`WorldSnapshot` v2/v3 强制所有实体的 `properties.z_index == 0`（非 0 将触发 `noncanonical_entity_order` 拒收），叠放顺序完全由 `entity_state.entities` 数组顺序与所属图层顺序决定。
-- **可选目录键**：`catalog` 另支持可选字段 `editor_view`（`{"layers": {<floor_uid>: <layer_uid>}, "all_unlocked": bool}`）与 `retired_layers`。
-- **模块数据分区 (`world.modules`)**：`version = 2`（向下兼容 v1），最多 `128` 个模块条目，模块 ID 匹配 `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$`（最长 `128` 字符），单条 `state` 上限 **`6 MiB`**，整块 `modules` 上限 **`8 MiB`**。
+- **可选目录键**：`catalog` 另支持可选字段 `active_floor_uid`、`editor_view`（`{"layers": {<floor_uid>: <layer_uid>}, "all_unlocked": bool}`）、`floor_visits`（`{<player_id>: [<floor_uid>, ...]}`，玩家键长度 `1..128`、数组 `<= 512`）与 `retired_layers`。
+- **模块数据分区 (`world.modules`)**：`version = 2`（向下兼容 v1），最多 `128` 个模块条目，模块 ID 匹配 `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$`（最长 `128` 字符），单条 `state` 保守尺寸上界 **`16 MiB`**（`_bounded()` 标量估算），整块 `modules` 上限 **`24 MiB`**（`_bounded()` 与 `var_to_bytes(raw).size() <= 24 MiB`）。
 
 ### 1.2 网格比例转换常数与空间变换 (`xform`)
 
@@ -94,7 +94,7 @@ const SOURCE_TO_WORLD := 64.0 / 150.0 # 0.4266666667
 
 - **`cell_size`**：有限浮点数，范围 `[8.0, 4096.0]`（Fu VTT 世界单位，默认 `64.0`）。
 - **`offset` / `color`**：分别以 2 元素和 4 元素 `float` 数组序列化（对应 `Vector2` 偏移与 RGBA 线框色）。
-- **现役限制**：`grid_alignment` 为**全局单一方格网格**配置（不支持六边形网格或按楼层设置不同 `cell_size`）；同时由于 `ImportBridge.run()` 默认设置 `metadata.module_choices = []`，导入后 `grid_alignment` 处于关闭状态，需由 GM 在战役设置中启用（可通过 `fu_sdk` v1.2.0 的 `WorldBuilder.configure_grid_alignment(...)` 一键写入）。
+- **现役限制**：`grid_alignment` 为**全局单一方格网格**配置（不支持六边形网格或按楼层设置不同 `cell_size`）；同时由于 `ImportBridge.run()` 默认设置 `metadata.module_choices = []`，导入后 `grid_alignment` 处于关闭状态，需由 GM 在战役设置中启用（可通过 `fu_sdk` `v1.3.0` 的 `WorldBuilder.configure_grid_alignment(...)` 一键写入）。
 
 ### 1.3 图片金字塔（LOD）与 3D 物理骰子管线
 
@@ -178,6 +178,46 @@ const SOURCE_TO_WORLD := 64.0 / 150.0 # 0.4266666667
   "layer_uid": "<32-hex>"
 }
 ```
+
+### 2.4 多场景常驻架构与 `Scene >> Floor >> Layer`（`v0.0.60` 新增，`SceneRepository`）
+
+自 `v0.0.60` 起，宿主引入“**场景 → 楼层 → 图层**”三层空间分区架构（`scenes/systems/world/scene_repository.gd` 与 `modules/scene_box/`）：
+- **常驻扁平存储 + 目录索引**：所有场景的楼层与实体依然共同常驻在 `catalog.floors`（`1..512`）与 `entity_state.entities`（`<= 10000`）中；每个 `floor_uid` 在同一战役内**严格只归属一个场景**，每个场景拥有 `1..N` 个有序 `floor_uids` 与一个 `default_floor_uid`（且每层维持 `map`/`obstacle`/`area`/`entity` 四类图层）。
+- **持久化存储位置**：场景目录以模块条目保存于 **`world.modules.entries["scene_box"]`**（`world.modules.version = 2` 下条目结构 `{"version": 1, "state": {...}}`，其中 `state.schema_version = 2`）：
+  ```json
+  {
+    "version": 1,
+    "state": {
+      "schema_version": 2,
+      "entry_scene_uid": "<32-hex>",
+      "host_active_scene_uid": "<32-hex>",
+      "scenes": [
+        {
+          "uid": "<32-hex>",
+          "name": "主场景",
+          "floor_uids": ["<32-hex>", "..."],
+          "default_floor_uid": "<32-hex>",
+          "cover_asset": ""
+        }
+      ],
+      "visited_scenes": { "host": ["<32-hex>"] },
+      "host_return_stack": [],
+      "host_views": {
+        "<scene_uid>": {
+          "camera_pos": "Vector2(x, y)",
+          "camera_zoom": "Vector2(zx, zy)",
+          "active_floor_uid": "<32-hex>"
+        }
+      }
+    }
+  }
+  ```
+- **硬容量配额**：最多 **`MAX_SCENES = 64`** 个场景、最多 **`MAX_VIEWERS = 128`** 条 `visited_scenes` 观看者记录；`scenes[i].cover_asset` 仅允许空串 `""` 或有效图片引用（`asset://<64-hex>.<ext>` / `res://...`）；`host_views` 内仅保留有限的 `Vector2`（`camera_pos`/`camera_zoom`）与有效 `active_floor_uid`。
+- **恢复联动不变量**：多场景存档恢复时，`host_active_scene_uid` 应指向拥有 `catalog.active_floor_uid` 的场景；当使用 `fu_sdk` `v1.3.0` 时，`WorldBuilder` 会自动校验并同步两者。
+- **SDK 三级操作入口（`fu_sdk v1.3.0`）**：
+  - 场景管理：`configure_entry_scene()`、`add_scene()`、`add_floor_to_scene()`、`move_floor_to_scene()`、`set_active_scene()`、`set_entry_scene()`、`rename_scene()`、`set_scene_cover_asset()`、`set_scene_host_view()`、`set_scene_default_floor()`、`get_scene_layer_uid()`；
+  - 场景入口物件：`add_scene_box()` / `attach_scene_box()`（写入 `res://modules/scene_box/comp_scene_box.gd`）；
+  - 跨楼层绑定修复：传入 `layer_uid_override` 时，`WorldBuilder` 按目标图层反查对应 `floor_uid`，自动正确写入 `world.members`。
 
 ---
 
@@ -271,9 +311,9 @@ const SOURCE_TO_WORLD := 64.0 / 150.0 # 0.4266666667
   - `font_size`: `float`，有限数且在 `[1.0, 4096.0]` 范围内
   - `source`: `Dictionary`（障碍物携带 `{"kind": "wall"|"air"|"door"|"window"|"glass", "enabled": bool, "open"?: bool}`）
 
-### 4.3 现役 `Practice` 全量 18 个 ECS 组件速查表
+### 4.3 现役 `Practice` 全量 21 个非测试 `comp_*.gd` 组件速查表
 
-所有未安装或当前未启用的可选组件记录可在序列化时携带 `"parked": true`，宿主校验时将不透明保留其状态，防止数据丢失。
+所有未安装或当前未启用的可选组件记录可在序列化时携带 `"parked": true`，并可附带可选布尔键 `"manual"`（宿主仅当 `"parked" == true` 时允许携带 `"manual": bool`，用于区分手工停放与自动停放）；宿主校验时将不透明保留其状态，防止数据丢失。
 
 | # | 脚本路径 (`res://...`) | 核心持久化字段 | 职责与网络/权限说明 |
 | :--- | :--- | :--- | :--- |
@@ -290,11 +330,14 @@ const SOURCE_TO_WORLD := 64.0 / 150.0 # 0.4266666667
 | 11 | `modules/follow/comp_follow.gd` | `target_id`, `controller_id`, `engaged`, `follow_distance` | 单位跟随与路径轨迹 |
 | 12 | `modules/image_flip/comp_image_flip.gd` | `horizontal`, `vertical` | 实体图片水平/垂直镜像翻转 |
 | 13 | `modules/portal/comp_portal.gd` | `pair_key` (`""` 或 32 位小写十六进制 UID) | 成对传送门端点 |
-| 14 | `scenes/candidates/entity_notes/comp_entity_note.gd` | `schema_version` (`1`), `text` (`<=32768`), `keep_screen_size`, `is_pin` | 实体备注与世界文本图钉（`is_pin=true` 启用 `PinView` 缩放不变命中） |
-| 15 | `scenes/candidates/initiative/components/comp_initiative.gd` | `count`, `modifier`, `active`, `defeated`, `rolled` | 先攻条战斗轮序 |
-| 16 | `scenes/candidates/resource_pool/comp_resource_pool.gd` | `schema_version`, `values: Dictionary` | 通用资源池与数值属性 |
-| 17 | `scenes/candidates/scene_box/comp_scene_box.gd` | `schema_version` (`1`), `scene_uid` | 场景盒 / 嵌套场景引用 |
-| 18 | `scenes/candidates/module_example/comp_example_badge.gd` | `schema_version`, `enabled`, `label` | 内置模块开发示例徽章 |
+| 14 | `modules/backpack/comp_backpack.gd` | 背包物品栏持久状态 | `backpack` 模块组件 |
+| 15 | `modules/character_roster/comp_character_roster_member.gd` | 左侧角色栏登记标记 | `character_roster` 模块成员组件 |
+| 16 | `modules/scene_box/comp_scene_box.gd` | `schema_version` (`1`), `target_scene_uid`, `preview_policy` (`visited_unlock`/`always_public`/`cover_only`), `enter_policy` (`players_allowed`/`host_only`), `cover_asset`, `seed_from_visual` | **`v0.0.60` 正式转正场景盒子**：要求 `entity_type != "map"`，并与 `BoardToken.SCENE_BOX_CONFLICTS`（`unit, obstacle, area, image_flip, portal, character_roster_member, initiative, resource_pool, backpack, drag_speed, follow, simple_vision, simple_light, entity_ink`）互斥 |
+| 17 | `scenes/candidates/entity_notes/comp_entity_note.gd` | `schema_version` (`1`), `text` (`<=32768`), `keep_screen_size`, `is_pin` | 实体备注与世界文本图钉（`is_pin=true` 启用 `PinView` 缩放不变命中） |
+| 18 | `scenes/candidates/initiative/components/comp_initiative.gd` | `count`, `modifier`, `active`, `defeated`, `rolled` | 先攻条战斗轮序 |
+| 19 | `scenes/candidates/resource_pool/comp_resource_pool.gd` | `schema_version`, `values: Dictionary` | 通用资源池与数值属性 |
+| 20 | `scenes/candidates/module_example/comp_example_badge.gd` | `schema_version`, `enabled`, `label` | 内置模块开发示例徽章 |
+| 21 | `scenes/candidates/scene_box/comp_scene_box.gd` | 旧候选脚本 | 已被 `modules/scene_box/comp_scene_box.gd` 取代 |
 
 ---
 

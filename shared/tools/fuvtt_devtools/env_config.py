@@ -10,7 +10,7 @@ from typing import Mapping
 
 
 DEFAULT_WORKSPACE_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_FUS_SOURCE_REF = "origin/codex/fuvtt-project-sync"
+DEFAULT_FUS_SOURCE_REF = "origin/codex/playtest-v060-20261122"
 
 REDACTED_INSTALL_PLACEHOLDER = "<FUVTT_INSTALL_DIR>"
 REDACTED_FUS_REPO_PLACEHOLDER = "<FUS_REPO_DIR>"

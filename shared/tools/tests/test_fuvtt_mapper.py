@@ -395,6 +395,18 @@ func _bounded_size_estimate(val: Variant, depth: int = 0) -> int:
 	if depth > 32:
 		return -1
 	match typeof(val):
+		TYPE_NIL:
+			return 8
+		TYPE_BOOL, TYPE_INT, TYPE_FLOAT:
+			return 16
+		TYPE_VECTOR2, TYPE_VECTOR2I:
+			return 24
+		TYPE_RECT2, TYPE_RECT2I, TYPE_VECTOR3, TYPE_VECTOR3I, TYPE_COLOR, TYPE_VECTOR4, TYPE_VECTOR4I, TYPE_PLANE, TYPE_QUATERNION:
+			return 40
+		TYPE_TRANSFORM2D, TYPE_AABB, TYPE_BASIS:
+			return 64
+		TYPE_TRANSFORM3D, TYPE_PROJECTION:
+			return 80
 		TYPE_STRING, TYPE_STRING_NAME, TYPE_NODE_PATH:
 			return 16 + str(val).length() * 4
 		TYPE_PACKED_BYTE_ARRAY:
@@ -503,11 +515,57 @@ func _validate_world_v3_quick(world: Dictionary) -> Array[String]:
 	for k: Variant in entries.keys():
 		var st: Dictionary = entries[k]["state"]
 		var eb: int = _bounded_size_estimate(st)
-		if var_to_bytes(st).size() > 6 * 1024 * 1024 or eb < 0 or eb > 6 * 1024 * 1024:
-			errs.append("module entry > 6MiB: " + str(k))
+		if var_to_bytes(st).size() > 16 * 1024 * 1024 or eb < 0 or eb > 16 * 1024 * 1024:
+			errs.append("module entry > 16MiB: " + str(k))
 	var tb: int = _bounded_size_estimate(mods)
-	if var_to_bytes(mods).size() > 8 * 1024 * 1024 or tb < 0 or tb > 8 * 1024 * 1024:
-		errs.append("modules total > 8MiB")
+	if var_to_bytes(mods).size() > 24 * 1024 * 1024 or tb < 0 or tb > 24 * 1024 * 1024:
+		errs.append("modules total > 24MiB")
+	if entries.has("scene_box"):
+		var sb_e: Variant = entries.get("scene_box", null)
+		if not (sb_e is Dictionary) or int((sb_e as Dictionary).get("version", -1)) != 1 or not ((sb_e as Dictionary).get("state", null) is Dictionary):
+			errs.append("bad scene_box entry envelope")
+		else:
+			var sbs: Dictionary = (sb_e as Dictionary)["state"] as Dictionary
+			if int(sbs.get("schema_version", -1)) != 2:
+				errs.append("bad scene_box schema_version")
+			var scenes_v: Variant = sbs.get("scenes", [])
+			if not (scenes_v is Array) or (scenes_v as Array).is_empty() or (scenes_v as Array).size() > 64:
+				errs.append("scene_box.scenes out of 1..64")
+			else:
+				var seen_suids: Dictionary = {}
+				var claimed_fl: Dictionary = {}
+				var s_fl_map: Dictionary = {}
+				for sc_item: Variant in scenes_v as Array:
+					if not (sc_item is Dictionary):
+						errs.append("scene_box scene not dict")
+						continue
+					var scd: Dictionary = sc_item as Dictionary
+					var suid := str(scd.get("uid", ""))
+					if suid.length() != 32 or seen_suids.has(suid) or str(scd.get("name", "")).strip_edges().is_empty():
+						errs.append("bad scene_box scene identity: " + suid)
+					seen_suids[suid] = true
+					var fl_arr: Variant = scd.get("floor_uids", [])
+					var this_fl: Dictionary = {}
+					if not (fl_arr is Array) or (fl_arr as Array).is_empty():
+						errs.append("empty scene_box floor_uids: " + suid)
+					else:
+						for fv: Variant in fl_arr as Array:
+							var fuid := str(fv)
+							if not fuid_set.has(fuid) or claimed_fl.has(fuid):
+								errs.append("invalid/duplicate scene floor: " + fuid)
+							claimed_fl[fuid] = suid
+							this_fl[fuid] = true
+					s_fl_map[suid] = this_fl
+					if not this_fl.has(str(scd.get("default_floor_uid", ""))):
+						errs.append("scene default_floor_uid not in floor_uids: " + suid)
+				if claimed_fl.size() != fuid_set.size():
+					errs.append("scene_box floor_uids do not partition catalog.floors")
+				var es_uid := str(sbs.get("entry_scene_uid", ""))
+				var hs_uid := str(sbs.get("host_active_scene_uid", ""))
+				if not seen_suids.has(es_uid) or not seen_suids.has(hs_uid):
+					errs.append("scene_box entry/host_active uid missing from scenes")
+				elif s_fl_map.has(hs_uid) and not (s_fl_map[hs_uid] as Dictionary).has(str(cat.get("active_floor_uid", ""))):
+					errs.append("catalog.active_floor_uid not in host_active_scene_uid")
 	var wb := var_to_bytes(world)
 	if wb.size() > 32 * 1024 * 1024:
 		errs.append("world > 32MiB")
@@ -815,23 +873,45 @@ func _init() -> void:
 		"actors": [], "assets": {}, "source_records": 10050,
 	}, b_10k, assets_scr.new(), null, h_10k, sdk.create_session(h_10k, {}), {})
 	var w_10k: Dictionary = b_10k.get_world()
+	var f_sb_entry: Dictionary = f_world.get("modules", {}).get("entries", {}).get("scene_box", {})
+	var f_sb_state: Dictionary = f_sb_entry.get("state", {}) if f_sb_entry is Dictionary else {}
+	var f_scenes: Array = f_sb_state.get("scenes", [])
+	var f_scene_names: Array = []
+	var f_scene_name_by_uid: Dictionary = {}
+	for fs_v: Variant in f_scenes:
+		if fs_v is Dictionary:
+			var fsd: Dictionary = fs_v as Dictionary
+			f_scene_names.append(fsd.get("name", ""))
+			f_scene_name_by_uid[str(fsd.get("uid", ""))] = str(fsd.get("name", ""))
+	var w_515: Dictionary = b_515.get_world()
+	var sb_515_state: Dictionary = w_515.get("modules", {}).get("entries", {}).get("scene_box", {}).get("state", {})
+	var sb_515_scenes: Array = sb_515_state.get("scenes", [])
+	var sb_515_entry_floors: int = (sb_515_scenes[0].get("floor_uids", []) as Array).size() if not sb_515_scenes.is_empty() else 0
 	results["mapper_floors_caps"] = {
 		"fl_names": fl_names, "fl_uids": fl_uids, "active_uid": f_world["catalog"]["active_floor_uid"],
 		"member_floors": member_floors, "f_v3_errs": _validate_world_v3_quick(f_world),
+		"f_has_scene_box": f_world.get("modules", {}).get("entries", {}).has("scene_box"),
+		"f_scene_names": f_scene_names,
+		"f_entry_scene_name": f_scene_name_by_uid.get(str(f_sb_state.get("entry_scene_uid", "")), ""),
+		"f_active_scene_name": f_scene_name_by_uid.get(str(f_sb_state.get("host_active_scene_uid", "")), ""),
 		"z_floor0_name": z_world["catalog"]["floors"][0]["name"],
 		"z_entities": z_world["entity_state"]["entities"].size(),
+		"z_has_scene_box": z_world.get("modules", {}).get("entries", {}).has("scene_box"),
 		"z_v3_errs": _validate_world_v3_quick(z_world),
-		"cap512_count": b_515.get_world()["catalog"]["floors"].size(),
+		"cap512_count": w_515["catalog"]["floors"].size(),
+		"cap512_scene_count": sb_515_scenes.size(),
+		"cap512_entry_floors": sb_515_entry_floors,
+		"cap512_v3_errs": _validate_world_v3_quick(w_515),
 		"cap512_warns": h_515.warnings.size(),
 		"cap10k_count": w_10k["entity_state"]["entities"].size(),
 		"cap10k_warns": h_10k.warnings.size(),
 		"cap10k_v3_errs": _validate_world_v3_quick(w_10k),
 	}
 
-	# 7. world.modules 6/8/30 MiB budget trimming
+	# 7. world.modules 16/24/30 MiB budget trimming
 	var long_bio := "B".repeat(5000)
 	var big_actors: Array = []
-	for ba_i: int in range(900):
+	for ba_i: int in range(2400):
 		big_actors.append({
 			"id": "ba_%d" % ba_i, "name": "BioActor_%d" % ba_i, "actor_type": "npc", "sub_type": "",
 			"folder_name": "BigFolder", "img_ref": "", "token_img_ref": "",
@@ -845,7 +925,7 @@ func _init() -> void:
 	mapper_scr.new().map_to_world({
 		"world_meta": {"id": "bud", "title": "Budget", "core_version": "10", "system": "dnd5e", "system_version": "2", "source_kind": "dir"},
 		"scenes": [{"id": "sb", "name": "S", "active": true, "width": 500.0, "height": 500.0, "scene_x": 0.0, "scene_y": 0.0, "grid_size": 100.0, "grid_type": 1, "grid_distance": 5.0, "grid_units": "ft", "background_ref": "", "foreground_ref": "", "hidden": false, "tiles": [], "walls": [], "lights": [], "tokens": []}],
-		"actors": big_actors, "assets": {}, "source_records": 901,
+		"actors": big_actors, "assets": {}, "source_records": 2401,
 	}, b_bud, assets_scr.new(), null, h_bud, sdk.create_session(h_bud, {}), {})
 	var bud_world: Dictionary = b_bud.get_world()
 	var bud_entry: Dictionary = bud_world["modules"]["entries"].get("fvtt_world_importer", {})
@@ -1545,12 +1625,20 @@ class TestFuvttMapperWithGodot(unittest.TestCase):
         r = self.results["mapper_floors_caps"]
         self.assertEqual(r["f_v3_errs"], [])
         self.assertEqual(r["fl_names"], ["S1", "S2"])
+        self.assertTrue(r["f_has_scene_box"])
+        self.assertEqual(r["f_scene_names"], ["S1", "S2"])
+        self.assertEqual(r["f_entry_scene_name"], "S2")
+        self.assertEqual(r["f_active_scene_name"], "S2")
         self.assertEqual(r["active_uid"], r["fl_uids"][1])
         self.assertEqual(r["member_floors"], [r["fl_uids"][0], r["fl_uids"][1]])
         self.assertEqual(r["z_floor0_name"], "1F")
         self.assertEqual(r["z_entities"], 1)
+        self.assertFalse(r["z_has_scene_box"])
         self.assertEqual(r["z_v3_errs"], [])
         self.assertEqual(r["cap512_count"], 512)
+        self.assertEqual(r["cap512_scene_count"], 64)
+        self.assertEqual(r["cap512_entry_floors"], 449)
+        self.assertEqual(r["cap512_v3_errs"], [])
         self.assertGreaterEqual(r["cap512_warns"], 1)
         self.assertEqual(r["cap10k_count"], 10000)
         self.assertGreaterEqual(r["cap10k_warns"], 1)
@@ -1559,8 +1647,8 @@ class TestFuvttMapperWithGodot(unittest.TestCase):
     def test_mapper_world_modules_budget_trimming(self) -> None:
         r = self.results["mapper_budget"]
         self.assertEqual(r["v3_errs"], [])
-        self.assertLessEqual(r["entry_var_bytes"], 6 * 1024 * 1024)
-        self.assertLessEqual(r["entry_bounded"], 6 * 1024 * 1024)
+        self.assertLessEqual(r["entry_var_bytes"], 16 * 1024 * 1024)
+        self.assertLessEqual(r["entry_bounded"], 16 * 1024 * 1024)
         if r["first_bio_len"] >= 0:
             self.assertLessEqual(r["first_bio_len"], 2048)
         self.assertGreaterEqual(len(r["warns"]), 1)
@@ -1616,10 +1704,10 @@ class TestFuvttMapperWithGodot(unittest.TestCase):
         r = self.results["iter2_2500"]
         self.assertTrue(r["ok"])
         self.assertEqual(r["v3_errs"], [])
-        self.assertLessEqual(r["mods_bounded"], 8 * 1024 * 1024)
-        self.assertLessEqual(r["mods_var_bytes"], 8 * 1024 * 1024)
+        self.assertLessEqual(r["mods_bounded"], 24 * 1024 * 1024)
+        self.assertLessEqual(r["mods_var_bytes"], 24 * 1024 * 1024)
         if r["has_importer_mod"]:
-            self.assertLessEqual(r["imp_entry_bounded"], 6 * 1024 * 1024)
+            self.assertLessEqual(r["imp_entry_bounded"], 16 * 1024 * 1024)
 
     def test_mapper_two_empty_scene_ids_unique_entities(self) -> None:
         r = self.results["iter2_empty_ids"]

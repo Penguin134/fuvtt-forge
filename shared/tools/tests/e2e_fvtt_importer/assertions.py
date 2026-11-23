@@ -14,11 +14,19 @@ from .harness import GdPackedVector2ArraySummary, GdVector2, ProbeCaseResult
 
 _UID_RE = re.compile(r"^[0-9a-f]{32}$")
 _MODULE_ID_RE = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$")
+_COVER_ASSET_RE = re.compile(r"^asset://[0-9a-f]{64}\.(png|jpg|jpeg|webp|bmp)$")
 _ALLOWED_LAYER_KINDS = frozenset({"map", "entity", "obstacle", "area"})
 _ALLOWED_ACCESS = frozenset({"all", "host", "players"})
 _OBSTACLE_KINDS = frozenset({"wall", "air", "door", "window", "glass"})
 _ALLOWED_ASSET_EXTS = frozenset({"png", "jpg", "jpeg", "webp", "bmp"})
 _ALLOWED_RES_EXTS = frozenset({"png", "jpg", "jpeg", "webp", "bmp", "svg"})
+_SCENE_BOX_PREVIEW_POLICIES = frozenset({"visited_unlock", "always_public", "cover_only"})
+_SCENE_BOX_ENTER_POLICIES = frozenset({"players_allowed", "host_only"})
+_SCENE_BOX_CONFLICTS = frozenset({
+    "unit", "obstacle", "area", "image_flip", "portal",
+    "character_roster_member", "initiative", "resource_pool", "backpack",
+    "drag_speed", "follow", "simple_vision", "simple_light", "entity_ink",
+})
 _INSPECT_COUNT_KEYS = (
     "records",
     "images",
@@ -349,6 +357,18 @@ def assert_valid_practice_world_v3(
             )
 
         etype = ent.get("entity_type", "")
+        comp_ids: set[str] = set()
+        has_scene_box = False
+        scene_box_state: dict[str, Any] = {}
+        for comp in comps:
+            if "manual" in comp:
+                tc.assertIsInstance(comp["manual"], bool)
+                tc.assertTrue(bool(comp.get("parked", False)), "component.manual requires parked=True")
+            cscript = str(comp.get("script", ""))
+            base = cscript.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+            cid = base[5:] if base.startswith("comp_") else base
+            if cid:
+                comp_ids.add(cid)
         for comp in comps[2:]:
             cscript = comp.get("script", "")
             cstate = comp.get("state", {})
@@ -360,6 +380,19 @@ def assert_valid_practice_world_v3(
                 ang = cstate.get("view_angle", -1.0)
                 tc.assertTrue(_is_finite_num(rad) and float(rad) >= 0.0)
                 tc.assertTrue(_is_finite_num(ang) and 0.0 <= float(ang) <= 360.0)
+            elif cscript == "res://modules/scene_box/comp_scene_box.gd":
+                has_scene_box = True
+                scene_box_state = cstate
+        if has_scene_box:
+            tc.assertNotEqual(etype, "map", f"entity[{idx}] with comp_scene_box cannot be 'map'")
+            tc.assertEqual(comp_ids & _SCENE_BOX_CONFLICTS, set(), f"entity[{idx}] scene_box conflicts: {comp_ids & _SCENE_BOX_CONFLICTS}")
+            tc.assertEqual(scene_box_state.get("schema_version"), 1)
+            t_uid = scene_box_state.get("target_scene_uid", "")
+            tc.assertTrue(isinstance(t_uid, str) and (t_uid == "" or bool(_UID_RE.match(t_uid))))
+            tc.assertIn(scene_box_state.get("preview_policy", "visited_unlock"), _SCENE_BOX_PREVIEW_POLICIES)
+            tc.assertIn(scene_box_state.get("enter_policy", "players_allowed"), _SCENE_BOX_ENTER_POLICIES)
+            cov = scene_box_state.get("cover_asset", "")
+            tc.assertTrue(isinstance(cov, str) and (cov == "" or bool(_COVER_ASSET_RE.match(cov))))
 
     members = world.get("members")
     tc.assertIsInstance(members, list)
@@ -384,6 +417,46 @@ def assert_valid_practice_world_v3(
             tc.assertIsInstance(entry, dict)
             tc.assertGreater(int(entry.get("version", 0)), 0)
             tc.assertIsInstance(entry.get("state"), dict)
+        if "scene_box" in entries:
+            sb_entry = entries["scene_box"]
+            tc.assertEqual(sb_entry.get("version"), 1)
+            sb_state = sb_entry.get("state", {})
+            tc.assertEqual(sb_state.get("schema_version"), 2)
+            entry_uid = sb_state.get("entry_scene_uid", "")
+            host_active_uid = sb_state.get("host_active_scene_uid", "")
+            tc.assertRegex(entry_uid, _UID_RE)
+            tc.assertRegex(host_active_uid, _UID_RE)
+            scenes = sb_state.get("scenes", [])
+            tc.assertIsInstance(scenes, list)
+            tc.assertTrue(1 <= len(scenes) <= 64, f"scene_box.scenes count out of 1..64: {len(scenes)}")
+            seen_suids: set[str] = set()
+            claimed_floors: set[str] = set()
+            scene_floor_map: dict[str, set[str]] = {}
+            for sc in scenes:
+                tc.assertIsInstance(sc, dict)
+                suid = sc.get("uid", "")
+                sname = str(sc.get("name", ""))
+                tc.assertRegex(suid, _UID_RE)
+                tc.assertNotIn(suid, seen_suids)
+                seen_suids.add(suid)
+                tc.assertTrue(1 <= len(sname.strip()) <= 96 and not _has_control_chars(sname))
+                sfl = sc.get("floor_uids", [])
+                tc.assertTrue(isinstance(sfl, list) and len(sfl) >= 1)
+                sc_set: set[str] = set()
+                for fuid in sfl:
+                    tc.assertRegex(fuid, _UID_RE)
+                    tc.assertIn(fuid, floor_uids)
+                    tc.assertNotIn(fuid, claimed_floors)
+                    claimed_floors.add(fuid)
+                    sc_set.add(fuid)
+                scene_floor_map[suid] = sc_set
+                tc.assertIn(sc.get("default_floor_uid"), sc_set)
+                scov = sc.get("cover_asset", "")
+                tc.assertTrue(isinstance(scov, str) and (scov == "" or bool(_COVER_ASSET_RE.match(scov))))
+            tc.assertEqual(claimed_floors, floor_uids, "scene_box floor_uids must partition catalog.floors")
+            tc.assertIn(entry_uid, seen_suids)
+            tc.assertIn(host_active_uid, seen_suids)
+            tc.assertIn(catalog.get("active_floor_uid"), scene_floor_map[host_active_uid])
 
     return world
 
@@ -513,7 +586,7 @@ def find_actor_records(world: dict[str, Any], actor_name: str) -> list[dict[str,
 
     modules_entries = world.get("modules", {}).get("entries", {})
     for mid, mentry in modules_entries.items():
-        if mid == "grid_alignment":
+        if mid in ("grid_alignment", "scene_box"):
             continue
         _walk_matching_dicts(mentry.get("state", {}), target_cf, matches)
 

@@ -723,14 +723,14 @@ func _initialize() -> void:
 	lib_res_map["post_map_rollback"] = {"ok": r_post.get("ok", false), "before": pre_rb_cnt, "after": st_post._records.size()}
 	out["entity_lib"] = lib_res_map
 
-	# G. Challenger 2 Test 3: gridless-only grid_alignment + 4600-actor full module omission
+	# G. Challenger 2 Test 3: gridless-only grid_alignment + 12000-actor full module omission (exceeds v0.0.60 16 MiB entry cap)
 	var h_go := Tier5MockHost.new()
 	var s_go = sdk_scr.new().create_session(h_go, {})
 	var b_go = sdk_scr.new().create_world_builder(null, 150.0)
 	var big_name := "N".repeat(400)
-	var actors_4600: Array = []
-	for i46: int in range(4600):
-		actors_4600.append({
+	var actors_big: Array = []
+	for i46: int in range(12000):
+		actors_big.append({
 			"id": "a_%d" % i46, "name": big_name, "actor_type": "npc", "sub_type": "", "folder_name": "Big",
 			"img_ref": "", "token_img_ref": "", "token_width": 1.0, "token_height": 1.0, "token_scale": 1.0,
 			"disposition": -1, "actor_link": false, "ac": 10, "hp_value": 10, "hp_max": 10, "cr_or_level": 1.0,
@@ -742,7 +742,7 @@ func _initialize() -> void:
 			{"id": "sg_a", "name": "Tavern", "active": true, "width": 500.0, "height": 500.0, "scene_x": 0.0, "scene_y": 0.0, "grid_size": 100.0, "grid_type": 0, "grid_distance": 5.0, "grid_units": "ft", "background_ref": "", "foreground_ref": "", "hidden": false, "tiles": [], "walls": [], "lights": [], "tokens": []},
 			{"id": "sg_b", "name": "Tavern", "active": false, "width": 500.0, "height": 500.0, "scene_x": 0.0, "scene_y": 0.0, "grid_size": 100.0, "grid_type": 0, "grid_distance": 5.0, "grid_units": "ft", "background_ref": "", "foreground_ref": "", "hidden": false, "tiles": [], "walls": [], "lights": [], "tokens": []},
 		],
-		"actors": actors_4600, "assets": {}, "source_records": 4602,
+		"actors": actors_big, "assets": {}, "source_records": 12002,
 	}, b_go, assets_scr.new(), null, h_go, s_go, {})
 	var w_go: Dictionary = b_go.get_world()
 	var f_uids_go: Array = []

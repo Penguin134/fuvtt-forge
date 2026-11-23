@@ -29,8 +29,6 @@ ERROR_LOG_RE = re.compile(
 LEAK_LOG_RE = re.compile(
     r"(?m)^WARNING:.*(ObjectDB.*leaked at exit|resources still in use at exit)"
 )
-# Godot Mono emits this single benign startup line when running a pure-GDScript probe project without a .csproj.
-_BENIGN_MONO_PROBE_LINES = frozenset({"ERROR: .NET: Assemblies not found"})
 
 PROBE_PROJECT_GODOT = """config_version=5
 
@@ -47,8 +45,16 @@ HEADLESS_PROBE_GD = r'''extends SceneTree
 
 const _COMP_VISUAL_SCRIPT: String = "res://scenes/entities/components/comp_visual.gd"
 const _COMP_PERMISSION_SCRIPT: String = "res://scenes/entities/components/comp_permission.gd"
+const _COMP_SCENE_BOX_SCRIPT: String = "res://modules/scene_box/comp_scene_box.gd"
 const _VALID_LAYER_KINDS: Array[String] = ["map", "entity", "obstacle", "area"]
 const _OBSTACLE_KINDS: Array[String] = ["wall", "air", "door", "window", "glass"]
+const _SCENE_BOX_PREVIEW_POLICIES: Array[String] = ["visited_unlock", "always_public", "cover_only"]
+const _SCENE_BOX_ENTER_POLICIES: Array[String] = ["players_allowed", "host_only"]
+const _SCENE_BOX_CONFLICTS: Array[String] = [
+	"unit", "obstacle", "area", "image_flip", "portal",
+	"character_roster_member", "initiative", "resource_pool", "backpack",
+	"drag_speed", "follow", "simple_vision", "simple_light", "entity_ink",
+]
 
 var _passed_checks: int = 0
 var _failures: Array[String] = []
@@ -410,7 +416,7 @@ func _validate_world_invariants(world: Dictionary, report_data: Dictionary) -> v
 				"entity[%d].xform.scale is finite non-zero Vector2" % idx
 			)
 
-		# components[0..1] fast-path invariant
+		# components[0..1] fast-path invariant + scene_box/manual component checks
 		var comps_v: Variant = ent.get("components", null)
 		_expect(comps_v is Array and (comps_v as Array).size() >= 2,
 				"entity[%d].components has >= 2 entries" % idx)
@@ -425,6 +431,39 @@ func _validate_world_invariants(world: Dictionary, report_data: Dictionary) -> v
 			var vstate_v: Variant = c0.get("state", {})
 			if vstate_v is Dictionary:
 				_validate_visual_state(vstate_v as Dictionary, idx)
+			var comp_ids: Dictionary = {}
+			var scene_box_state: Dictionary = {}
+			var has_scene_box_comp: bool = false
+			for c_idx: int in range(comps.size()):
+				var cdict_v: Variant = comps[c_idx]
+				_expect(cdict_v is Dictionary, "entity[%d].components[%d] is Dictionary" % [idx, c_idx])
+				if not (cdict_v is Dictionary):
+					continue
+				var cdict: Dictionary = cdict_v as Dictionary
+				var c_script: String = String(cdict.get("script", ""))
+				var c_state_v: Variant = cdict.get("state", null)
+				var expected_keys: int = 2 + int(cdict.has("parked")) + int(cdict.has("manual"))
+				_expect(cdict.has("script") and cdict.has("state") and cdict.size() == expected_keys,
+						"entity[%d].components[%d] has exact allowed keys" % [idx, c_idx])
+				if cdict.has("parked"):
+					_expect(cdict.get("parked") is bool, "entity[%d].components[%d].parked is bool" % [idx, c_idx])
+				if cdict.has("manual"):
+					_expect(cdict.get("manual") is bool and bool(cdict.get("parked", false)),
+							"entity[%d].components[%d].manual requires parked == true" % [idx, c_idx])
+				_expect(c_state_v is Dictionary, "entity[%d].components[%d].state is Dictionary" % [idx, c_idx])
+				var cid: String = _probe_component_id(c_script)
+				if not cid.is_empty():
+					comp_ids[cid] = true
+				if c_script == _COMP_SCENE_BOX_SCRIPT and c_state_v is Dictionary:
+					has_scene_box_comp = true
+					scene_box_state = c_state_v as Dictionary
+			if has_scene_box_comp:
+				_expect(String(ent.get("entity_type", "")) != "map",
+						"entity[%d] with comp_scene_box is not entity_type == 'map'" % idx)
+				for conflict_cid: String in _SCENE_BOX_CONFLICTS:
+					_expect(not comp_ids.has(conflict_cid),
+							"entity[%d] comp_scene_box has no conflict with '%s'" % [idx, conflict_cid])
+				_validate_comp_scene_box_state(scene_box_state, idx)
 
 	# Members graph check
 	var members_v: Variant = world.get("members", null)
@@ -444,11 +483,156 @@ func _validate_world_invariants(world: Dictionary, report_data: Dictionary) -> v
 			_expect(layer_owner_by_uid.get(mluid, "") == mfuid,
 					"members[%d].layer_uid belongs to floor_uid" % m_idx)
 
+	var scene_uids_map: Dictionary = {}
 	if world.has("modules"):
 		var mods_v: Variant = world.get("modules", null)
 		_expect(mods_v is Dictionary and int((mods_v as Dictionary).get("version", -1)) == 2
 				and (mods_v as Dictionary).get("entries", null) is Dictionary,
 				"world.modules has version == 2 and entries Dictionary")
+		if mods_v is Dictionary and (mods_v as Dictionary).get("entries", null) is Dictionary:
+			_expect(var_to_bytes(mods_v).size() <= 24 * 1024 * 1024,
+					"world.modules var_to_bytes <= 24 MiB")
+			var entries_dict: Dictionary = (mods_v as Dictionary)["entries"] as Dictionary
+			for mid: Variant in entries_dict.keys():
+				var entry_v: Variant = entries_dict[mid]
+				if entry_v is Dictionary and (entry_v as Dictionary).get("state", null) is Dictionary:
+					_expect(var_to_bytes((entry_v as Dictionary)["state"]).size() <= 16 * 1024 * 1024,
+							"world.modules.entries.%s var_to_bytes <= 16 MiB" % str(mid))
+			if entries_dict.has("scene_box"):
+				scene_uids_map = _validate_scene_box_module(entries_dict["scene_box"], catalog, floor_uids)
+
+	if not scene_uids_map.is_empty():
+		for idx: int in range(entities.size()):
+			var raw_ent: Variant = entities[idx]
+			if not (raw_ent is Dictionary):
+				continue
+			for raw_comp: Variant in (raw_ent as Dictionary).get("components", []) as Array:
+				if raw_comp is Dictionary and String((raw_comp as Dictionary).get("script", "")) == _COMP_SCENE_BOX_SCRIPT:
+					var st_v: Variant = (raw_comp as Dictionary).get("state", null)
+					if st_v is Dictionary:
+						var t_uid: String = String((st_v as Dictionary).get("target_scene_uid", ""))
+						if not t_uid.is_empty():
+							_expect(scene_uids_map.has(t_uid),
+									"entity[%d] comp_scene_box.target_scene_uid exists in scene_box.scenes" % idx)
+
+
+func _probe_component_id(script_path: String) -> String:
+	var base: String = script_path.get_file().get_basename()
+	return base.substr(5) if base.begins_with("comp_") else base
+
+
+func _is_valid_hex32(val: String) -> bool:
+	if val.length() != 32:
+		return false
+	for i: int in range(32):
+		var c: int = val.unicode_at(i)
+		if not ((c >= 48 and c <= 57) or (c >= 97 and c <= 102)):
+			return false
+	return true
+
+
+func _is_valid_cover_asset(val: String) -> bool:
+	if val.is_empty():
+		return true
+	var rx := RegEx.new()
+	if rx.compile("^asset://[0-9a-f]{64}\\.(png|jpg|jpeg|webp|bmp)$") != OK:
+		return false
+	return rx.search(val) != null
+
+
+func _validate_comp_scene_box_state(st: Dictionary, ent_idx: int) -> void:
+	_expect(st.get("schema_version", null) is int and int(st.get("schema_version", 0)) == 1,
+			"entity[%d] comp_scene_box.schema_version == 1" % ent_idx)
+	var t_uid: Variant = st.get("target_scene_uid", "")
+	_expect(t_uid is String and (String(t_uid).is_empty() or _is_valid_hex32(String(t_uid))),
+			"entity[%d] comp_scene_box.target_scene_uid is '' or 32-hex" % ent_idx)
+	var prev_pol: Variant = st.get("preview_policy", "visited_unlock")
+	_expect(prev_pol is String and String(prev_pol) in _SCENE_BOX_PREVIEW_POLICIES,
+			"entity[%d] comp_scene_box.preview_policy is valid" % ent_idx)
+	var enter_pol: Variant = st.get("enter_policy", "players_allowed")
+	_expect(enter_pol is String and String(enter_pol) in _SCENE_BOX_ENTER_POLICIES,
+			"entity[%d] comp_scene_box.enter_policy is valid" % ent_idx)
+	var cov: Variant = st.get("cover_asset", "")
+	_expect(cov is String and _is_valid_cover_asset(String(cov)),
+			"entity[%d] comp_scene_box.cover_asset is '' or valid asset://" % ent_idx)
+
+
+func _validate_scene_box_module(entry_v: Variant, catalog: Dictionary, catalog_floor_uids: Dictionary) -> Dictionary:
+	var scene_uids: Dictionary = {}
+	_expect(entry_v is Dictionary, "scene_box module entry is Dictionary")
+	if not (entry_v is Dictionary):
+		return scene_uids
+	var entry: Dictionary = entry_v as Dictionary
+	_expect(entry.get("version", null) is int and int(entry.get("version", 0)) == 1,
+			"scene_box module entry.version == 1")
+	var st_v: Variant = entry.get("state", null)
+	_expect(st_v is Dictionary, "scene_box module entry.state is Dictionary")
+	if not (st_v is Dictionary):
+		return scene_uids
+	var st: Dictionary = st_v as Dictionary
+	_expect(st.get("schema_version", null) is int and int(st.get("schema_version", 0)) == 2,
+			"scene_box.state.schema_version == 2")
+
+	var entry_uid: String = String(st.get("entry_scene_uid", ""))
+	var host_active_uid: String = String(st.get("host_active_scene_uid", ""))
+	_expect(_is_valid_hex32(entry_uid), "scene_box.entry_scene_uid is 32-hex")
+	_expect(_is_valid_hex32(host_active_uid), "scene_box.host_active_scene_uid is 32-hex")
+
+	var scenes_v: Variant = st.get("scenes", null)
+	_expect(scenes_v is Array and not (scenes_v as Array).is_empty() and (scenes_v as Array).size() <= 64,
+			"scene_box.scenes has 1..64 entries")
+	if not (scenes_v is Array):
+		return scene_uids
+
+	var claimed_floors: Dictionary = {}
+	var scene_floors_map: Dictionary = {}
+	for s_idx: int in range((scenes_v as Array).size()):
+		var raw_s: Variant = (scenes_v as Array)[s_idx]
+		_expect(raw_s is Dictionary, "scene_box.scenes[%d] is Dictionary" % s_idx)
+		if not (raw_s is Dictionary):
+			continue
+		var srow: Dictionary = raw_s as Dictionary
+		var suid: String = String(srow.get("uid", ""))
+		var sname: String = String(srow.get("name", "")).strip_edges()
+		_expect(_is_valid_hex32(suid) and not scene_uids.has(suid),
+				"scene_box.scenes[%d] has unique 32-hex uid" % s_idx)
+		_expect(not sname.is_empty() and sname.length() <= 96,
+				"scene_box.scenes[%d] has valid non-empty name" % s_idx)
+		scene_uids[suid] = true
+
+		var fl_v: Variant = srow.get("floor_uids", null)
+		_expect(fl_v is Array and not (fl_v as Array).is_empty(),
+				"scene_box.scenes[%d].floor_uids is non-empty Array" % s_idx)
+		var this_floors: Dictionary = {}
+		if fl_v is Array:
+			for fv: Variant in fl_v as Array:
+				var fuid: String = String(fv)
+				_expect(_is_valid_hex32(fuid) and catalog_floor_uids.has(fuid) and not claimed_floors.has(fuid),
+						"scene_box.scenes[%d] floor_uid '%s' exists and is globally disjoint" % [s_idx, fuid])
+				claimed_floors[fuid] = suid
+				this_floors[fuid] = true
+		scene_floors_map[suid] = this_floors
+
+		var def_f: String = String(srow.get("default_floor_uid", ""))
+		_expect(this_floors.has(def_f),
+				"scene_box.scenes[%d].default_floor_uid belongs to its floor_uids" % s_idx)
+		var cov: Variant = srow.get("cover_asset", "")
+		_expect(cov is String and _is_valid_cover_asset(String(cov)),
+				"scene_box.scenes[%d].cover_asset is valid" % s_idx)
+
+	for cf_uid: Variant in catalog_floor_uids.keys():
+		_expect(claimed_floors.has(String(cf_uid)),
+				"catalog floor '%s' is claimed by a scene_box scene" % String(cf_uid))
+
+	_expect(scene_uids.has(entry_uid), "scene_box.entry_scene_uid exists in scenes")
+	_expect(scene_uids.has(host_active_uid), "scene_box.host_active_scene_uid exists in scenes")
+
+	var active_floor: String = String(catalog.get("active_floor_uid", ""))
+	if scene_floors_map.has(host_active_uid):
+		var active_scene_floors: Dictionary = scene_floors_map[host_active_uid] as Dictionary
+		_expect(active_scene_floors.has(active_floor),
+				"catalog.active_floor_uid belongs to scene_box.host_active_scene_uid")
+	return scene_uids
 
 
 func _validate_visual_state(vstate: Dictionary, ent_idx: int) -> void:
@@ -628,7 +812,7 @@ def analyze_godot_logs(*log_texts: str) -> list[str]:
     combined = "\n".join(text for text in log_texts if text)
     for line in combined.splitlines():
         stripped = line.strip()
-        if not stripped or stripped in _BENIGN_MONO_PROBE_LINES:
+        if not stripped:
             continue
         if ERROR_LOG_RE.match(stripped) or LEAK_LOG_RE.match(stripped):
             if stripped not in findings:

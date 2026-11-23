@@ -401,8 +401,8 @@ class Tier4WorkloadTests(unittest.TestCase):
             self.assertIn(req_scene, floor_names)
 
         self.assertLessEqual(res.prepare_meta.get("serialized_bytes", 0), 32 * 1024 * 1024)
-        self.assertLessEqual(res.prepare_meta.get("modules_max_entry_bounded_bytes", 0), 6 * 1024 * 1024)
-        self.assertLessEqual(res.prepare_meta.get("modules_bounded_bytes", 0), 8 * 1024 * 1024)
+        self.assertLessEqual(res.prepare_meta.get("modules_max_entry_bounded_bytes", 0), 16 * 1024 * 1024)
+        self.assertLessEqual(res.prepare_meta.get("modules_bounded_bytes", 0), 24 * 1024 * 1024)
 
         self.assertGreaterEqual(len(get_unit_entities(world)), 618)
         self.assertGreaterEqual(len(get_obstacle_entities(world, kind="door")), 123)

@@ -1,5 +1,5 @@
 extends RefCounted
-## Fu vtt Host API v1 底层防腐适配器 (Practice v0.0.56 / Steam v0.0.57 / fus.floor_layers.v2)
+## Fu vtt Host API v1 底层防腐适配器 (Practice / Steam Playtest v0.0.60, cc3d43a5 / fus.floor_layers.v2 / SceneRepository v2)
 ##
 ## 唯一允许感知宿主底层字典结构、组件脚本路径与图层 UID 规则的适配层。
 ## 当后续 Playtest 客户端调整底层结构时，仅需在此目录演进 Adapter，保持上层 v1.gd 契约稳定。
@@ -19,6 +19,25 @@ const COMP_ENTITY_NOTE_SCRIPT: String = "res://scenes/candidates/entity_notes/co
 const COMP_PORTAL_SCRIPT: String = "res://modules/portal/comp_portal.gd"
 const COMP_SIMPLE_VISION_SCRIPT: String = "res://modules/simple_fog/comp_simple_vision.gd"
 const COMP_SIMPLE_LIGHT_SCRIPT: String = "res://modules/simple_fog/comp_simple_light.gd"
+const COMP_SCENE_BOX_SCRIPT: String = "res://modules/scene_box/comp_scene_box.gd"
+
+const SCENE_BOX_MODULE_ID: String = "scene_box"
+const SCENE_BOX_MODULE_VERSION: int = 1
+const SCENE_BOX_SCHEMA_VERSION: int = 2
+const MAX_SCENES: int = 64
+const MAX_SCENE_VIEWERS: int = 128
+const MAX_SCENE_VIEWER_KEY_LENGTH: int = 128
+const DEFAULT_SCENE_FLOOR_COLOR: Color = Color(0.32, 0.56, 0.44)
+const SCENE_BOX_PREVIEW_POLICIES: Array[String] = ["visited_unlock", "always_public", "cover_only"]
+const SCENE_BOX_ENTER_POLICIES: Array[String] = ["players_allowed", "host_only"]
+const SCENE_BOX_DEFAULT_SIDE_WORLD: float = 96.0
+const SCENE_BOX_MIN_SIDE_WORLD: float = 72.0
+const SCENE_BOX_MAX_SIDE_WORLD: float = 256.0
+const SCENE_BOX_CONFLICT_COMPONENT_IDS: Array[String] = [
+	"unit", "obstacle", "area", "image_flip", "portal",
+	"character_roster_member", "initiative", "resource_pool", "backpack",
+	"drag_speed", "follow", "simple_vision", "simple_light", "entity_ink",
+]
 
 const DEFAULT_LAYER_KINDS: Array[String] = ["map", "entity", "obstacle"]
 const LAYER_KINDS: Array[String] = ["map", "entity", "obstacle", "area"]
@@ -44,8 +63,8 @@ const MAX_FONT_SIZE: float = 4096.0
 const MAX_NOTE_TEXT_LENGTH: int = 32768
 const MAX_MODULE_ENTRIES: int = 128
 const MAX_MODULE_ID_LENGTH: int = 128
-const MAX_MODULE_ENTRY_BYTES: int = 6 * 1024 * 1024
-const MAX_MODULE_TOTAL_BYTES: int = 8 * 1024 * 1024
+const MAX_MODULE_ENTRY_BYTES: int = 16 * 1024 * 1024
+const MAX_MODULE_TOTAL_BYTES: int = 24 * 1024 * 1024
 const MAX_WORLD_BUDGET_BYTES: int = 30 * 1024 * 1024
 
 const DEFAULT_SOURCE_UNITS_PER_CELL: float = 150.0
@@ -290,6 +309,31 @@ func sanitize_sprite_path(path: String) -> Dictionary:
 	if is_valid_sprite_path(clean):
 		return {"ok": true, "path": clean, "rejected": ""}
 	return {"ok": false, "path": "", "rejected": clean}
+
+
+func is_valid_asset_reference(ref_str: String) -> bool:
+	var clean: String = sanitize_text(ref_str).strip_edges()
+	if not clean.begins_with("asset://"):
+		return false
+	var regex := RegEx.new()
+	if regex.compile("^asset://[0-9a-f]{64}\\.(png|jpg|jpeg|webp|bmp)$") != OK:
+		return false
+	return regex.search(clean) != null
+
+
+func sanitize_cover_asset(ref_str: String) -> Dictionary:
+	var clean: String = sanitize_text(ref_str).strip_edges()
+	if clean.is_empty():
+		return {"ok": true, "cover_asset": "", "sanitized": false}
+	if is_valid_asset_reference(clean):
+		return {"ok": true, "cover_asset": clean, "sanitized": false}
+	return {
+		"ok": false,
+		"cover_asset": "",
+		"sanitized": true,
+		"reason": "invalid_cover_asset",
+		"rejected": clean,
+	}
 
 
 func compute_source_to_world_scale(source_units_per_cell: float = DEFAULT_SOURCE_UNITS_PER_CELL) -> float:
@@ -704,6 +748,631 @@ func get_floor_layer_map(world: Dictionary, floor_uid: String) -> Dictionary:
 							layer_map[k] = uid
 			return layer_map
 	return {}
+
+
+func get_floor_for_layer(world: Dictionary, layer_uid: String) -> String:
+	if layer_uid.is_empty():
+		return ""
+	var catalog_var: Variant = world.get("catalog", null)
+	if not (catalog_var is Dictionary):
+		return ""
+	var layers_root_var: Variant = (catalog_var as Dictionary).get("layers", null)
+	if not (layers_root_var is Dictionary):
+		return ""
+	var layer_floors_var: Variant = (layers_root_var as Dictionary).get("floors", null)
+	if not (layer_floors_var is Array):
+		return ""
+	for raw_floor: Variant in layer_floors_var as Array:
+		if not (raw_floor is Dictionary):
+			continue
+		var floor_dict: Dictionary = raw_floor as Dictionary
+		var fuid: String = str(floor_dict.get("floor_uid", ""))
+		var rows_var: Variant = floor_dict.get("layers", [])
+		if rows_var is Array:
+			for raw_layer: Variant in rows_var as Array:
+				if raw_layer is Dictionary and str((raw_layer as Dictionary).get("layer_uid", "")) == layer_uid:
+					return fuid
+	return ""
+
+
+func get_floor_layers(world: Dictionary, floor_uid: String) -> Array:
+	if floor_uid.is_empty():
+		return []
+	var catalog_var: Variant = world.get("catalog", null)
+	if not (catalog_var is Dictionary):
+		return []
+	var layers_root_var: Variant = (catalog_var as Dictionary).get("layers", null)
+	if not (layers_root_var is Dictionary):
+		return []
+	var layer_floors_var: Variant = (layers_root_var as Dictionary).get("floors", null)
+	if not (layer_floors_var is Array):
+		return []
+	for raw_floor: Variant in layer_floors_var as Array:
+		if raw_floor is Dictionary and str((raw_floor as Dictionary).get("floor_uid", "")) == floor_uid:
+			var rows_var: Variant = (raw_floor as Dictionary).get("layers", [])
+			if rows_var is Array:
+				return (rows_var as Array).duplicate(true)
+			return []
+	return []
+
+
+func has_scene_repository_state(world: Dictionary) -> bool:
+	var st: Dictionary = _get_scene_box_state_read(world)
+	if st.is_empty():
+		return false
+	var scenes_var: Variant = st.get("scenes", null)
+	return scenes_var is Array and not (scenes_var as Array).is_empty()
+
+
+func ensure_scene_repository_state(
+	world: Dictionary,
+	entry_name: String = "主场景",
+	cover_asset: String = "",
+	entry_uid_override: String = ""
+) -> Dictionary:
+	var floor_uids: Array[String] = _extract_world_floor_uids(world)
+	if floor_uids.is_empty():
+		return build_failed("empty_world_floors")
+
+	var modules_dict: Dictionary = _ensure_world_modules_dict(world)
+	var entries: Dictionary = modules_dict["entries"]
+	var existing_state: Dictionary = _get_scene_box_state_read(world)
+
+	if existing_state.is_empty() or not (existing_state.get("scenes", null) is Array) or (existing_state["scenes"] as Array).is_empty():
+		var clean_name: String = sanitize_catalog_name(entry_name, "主场景")
+		var cover_check: Dictionary = sanitize_cover_asset(cover_asset)
+		var safe_cover: String = str(cover_check["cover_asset"])
+
+		var entry_uid: String = entry_uid_override.strip_edges().to_lower()
+		if entry_uid.is_empty():
+			entry_uid = ("fu_sdk:scene:entry:%s:%s" % [floor_uids[0], clean_name]).sha256_text().left(32)
+		elif not is_valid_uid(entry_uid):
+			return build_failed("invalid_entry_scene_uid")
+
+		var floor_list: Array = []
+		for fuid: String in floor_uids:
+			floor_list.append(fuid)
+
+		var active_floor: String = str((world.get("catalog", {}) as Dictionary).get("active_floor_uid", ""))
+		var default_floor: String = active_floor if active_floor in floor_list else str(floor_list[0])
+		if active_floor.is_empty():
+			(world["catalog"] as Dictionary)["active_floor_uid"] = default_floor
+
+		var state: Dictionary = {
+			"schema_version": SCENE_BOX_SCHEMA_VERSION,
+			"entry_scene_uid": entry_uid,
+			"host_active_scene_uid": entry_uid,
+			"scenes": [
+				{
+					"uid": entry_uid,
+					"name": clean_name,
+					"floor_uids": floor_list,
+					"default_floor_uid": default_floor,
+					"cover_asset": safe_cover,
+				},
+			],
+			"visited_scenes": {
+				"host": [entry_uid],
+			},
+			"host_return_stack": [],
+			"host_views": {},
+		}
+		entries[SCENE_BOX_MODULE_ID] = {
+			"version": SCENE_BOX_MODULE_VERSION,
+			"state": state,
+		}
+		return {
+			"ok": true,
+			"entry_scene_uid": entry_uid,
+			"host_active_scene_uid": entry_uid,
+			"default_floor_uid": default_floor,
+			"cover_sanitized": bool(cover_check["sanitized"]),
+		}
+
+	# 若已初始化，则仅将尚未归属任何场景的新增楼层纳入入口场景（对齐 SceneRepository.reconcile_floors）。
+	var scenes: Array = existing_state["scenes"]
+	var entry_uid_cur: String = str(existing_state.get("entry_scene_uid", ""))
+	var entry_row: Dictionary = _find_scene_row(scenes, entry_uid_cur)
+	if entry_row.is_empty():
+		entry_row = scenes[0] as Dictionary
+		entry_uid_cur = str(entry_row.get("uid", ""))
+		existing_state["entry_scene_uid"] = entry_uid_cur
+
+	var claimed: Dictionary = {}
+	for raw_scene: Variant in scenes:
+		if raw_scene is Dictionary:
+			var sf_var: Variant = (raw_scene as Dictionary).get("floor_uids", [])
+			if sf_var is Array:
+				for fv: Variant in sf_var as Array:
+					claimed[str(fv)] = true
+
+	var entry_floors_var: Variant = entry_row.get("floor_uids", [])
+	var entry_floors: Array = entry_floors_var if entry_floors_var is Array else []
+	entry_row["floor_uids"] = entry_floors
+	for fuid: String in floor_uids:
+		if not claimed.has(fuid):
+			entry_floors.append(fuid)
+			claimed[fuid] = true
+
+	var active_scene_cur: String = str(existing_state.get("host_active_scene_uid", ""))
+	if _find_scene_row(scenes, active_scene_cur).is_empty():
+		active_scene_cur = entry_uid_cur
+		existing_state["host_active_scene_uid"] = active_scene_cur
+
+	_mark_host_scene_visited(existing_state, entry_uid_cur)
+	_mark_host_scene_visited(existing_state, active_scene_cur)
+	return {
+		"ok": true,
+		"entry_scene_uid": entry_uid_cur,
+		"host_active_scene_uid": active_scene_cur,
+		"default_floor_uid": str(entry_row.get("default_floor_uid", floor_uids[0])),
+		"cover_sanitized": false,
+	}
+
+
+func configure_entry_scene_state(
+	world: Dictionary,
+	entry_name: String = "主场景",
+	cover_asset: String = "",
+	entry_uid_override: String = ""
+) -> Dictionary:
+	var ensure_res: Dictionary = ensure_scene_repository_state(world, entry_name, cover_asset, entry_uid_override)
+	if not bool(ensure_res.get("ok", false)):
+		return ensure_res
+	var state: Dictionary = _get_scene_box_state_read(world)
+	var scenes: Array = state.get("scenes", [])
+	var entry_uid: String = str(state.get("entry_scene_uid", ""))
+	var row: Dictionary = _find_scene_row(scenes, entry_uid)
+	var cover_sanitized: bool = bool(ensure_res.get("cover_sanitized", false))
+	if not row.is_empty():
+		var clean_name: String = sanitize_catalog_name(entry_name, str(row.get("name", "主场景")))
+		row["name"] = clean_name
+		if not cover_asset.is_empty():
+			var cover_check: Dictionary = sanitize_cover_asset(cover_asset)
+			row["cover_asset"] = str(cover_check["cover_asset"])
+			cover_sanitized = cover_sanitized or bool(cover_check["sanitized"])
+	return {
+		"ok": true,
+		"entry_scene_uid": entry_uid,
+		"host_active_scene_uid": str(state.get("host_active_scene_uid", entry_uid)),
+		"default_floor_uid": str(row.get("default_floor_uid", "")) if not row.is_empty() else "",
+		"cover_sanitized": cover_sanitized,
+	}
+
+
+func create_scene(
+	world: Dictionary,
+	scene_name: String,
+	initial_floor_name: String = "1F",
+	floor_color: Color = DEFAULT_SCENE_FLOOR_COLOR,
+	cover_asset: String = "",
+	make_active: bool = false,
+	scene_uid_override: String = "",
+	floor_uid_override: String = ""
+) -> Dictionary:
+	var ensure_res: Dictionary = ensure_scene_repository_state(world)
+	if not bool(ensure_res.get("ok", false)):
+		return ensure_res
+
+	var state: Dictionary = _get_scene_box_state_read(world)
+	var scenes_var: Variant = state.get("scenes", null)
+	if not (scenes_var is Array):
+		return build_failed("invalid_scene_box_state")
+	var scenes: Array = scenes_var as Array
+	if scenes.size() >= MAX_SCENES:
+		return build_failed("scene_limit_exceeded")
+
+	var existing_scene_uids: Dictionary = {}
+	for raw_scene: Variant in scenes:
+		if raw_scene is Dictionary:
+			existing_scene_uids[str((raw_scene as Dictionary).get("uid", ""))] = true
+
+	var clean_scene_name: String = sanitize_catalog_name(scene_name, "场景 %d" % (scenes.size() + 1))
+	var explicit_uid: String = scene_uid_override.strip_edges().to_lower()
+	if not explicit_uid.is_empty() and (not is_valid_uid(explicit_uid) or existing_scene_uids.has(explicit_uid)):
+		return build_failed("invalid_or_duplicate_scene_uid")
+
+	var floor_res: Dictionary = create_floor(world, initial_floor_name, floor_color, floor_uid_override)
+	if not bool(floor_res.get("ok", false)):
+		return floor_res
+
+	var floor_uid: String = str(floor_res["floor_uid"])
+	var scene_uid: String = explicit_uid
+	if scene_uid.is_empty():
+		var attempt: int = 0
+		while true:
+			var seed_text: String = "fu_sdk:scene:%s:%s:%d:%d" % [floor_uid, clean_scene_name, scenes.size(), attempt]
+			var candidate: String = seed_text.sha256_text().left(32)
+			if not existing_scene_uids.has(candidate):
+				scene_uid = candidate
+				break
+			attempt += 1
+
+	var cover_check: Dictionary = sanitize_cover_asset(cover_asset)
+	var safe_cover: String = str(cover_check["cover_asset"])
+	scenes.append({
+		"uid": scene_uid,
+		"name": clean_scene_name,
+		"floor_uids": [floor_uid],
+		"default_floor_uid": floor_uid,
+		"cover_asset": safe_cover,
+	})
+
+	if make_active:
+		var act_res: Dictionary = set_active_scene(world, scene_uid, floor_uid, true)
+		if not bool(act_res.get("ok", false)):
+			return act_res
+
+	var floor_layers: Dictionary = (floor_res["layers"] as Dictionary).duplicate()
+	return {
+		"ok": true,
+		"scene_uid": scene_uid,
+		"floor_uid": floor_uid,
+		"name": clean_scene_name,
+		"layers": floor_layers,
+		"layers_by_kind": floor_layers,
+		"cover_sanitized": bool(cover_check["sanitized"]),
+	}
+
+
+func add_floor_to_scene(
+	world: Dictionary,
+	scene_uid: String,
+	floor_name: String,
+	color: Color = DEFAULT_FLOOR_COLOR,
+	make_default: bool = false,
+	make_active: bool = false,
+	floor_uid_override: String = ""
+) -> Dictionary:
+	if not has_scene_repository_state(world):
+		return build_failed("scene_repository_not_initialized")
+	var state: Dictionary = _get_scene_box_state_read(world)
+	var scenes: Array = state.get("scenes", [])
+	var row: Dictionary = _find_scene_row(scenes, scene_uid)
+	if row.is_empty():
+		return build_failed("unknown_scene_uid")
+
+	var floor_res: Dictionary = create_floor(world, floor_name, color, floor_uid_override)
+	if not bool(floor_res.get("ok", false)):
+		return floor_res
+
+	var floor_uid: String = str(floor_res["floor_uid"])
+	var floor_list: Array = row.get("floor_uids", [])
+	if not (floor_list is Array):
+		floor_list = []
+		row["floor_uids"] = floor_list
+	if not (floor_uid in floor_list):
+		floor_list.append(floor_uid)
+	if make_default or str(row.get("default_floor_uid", "")).is_empty():
+		row["default_floor_uid"] = floor_uid
+
+	if make_active:
+		var act_res: Dictionary = set_active_scene(world, scene_uid, floor_uid, true)
+		if not bool(act_res.get("ok", false)):
+			return act_res
+
+	var floor_layers: Dictionary = (floor_res["layers"] as Dictionary).duplicate()
+	return {
+		"ok": true,
+		"scene_uid": scene_uid,
+		"floor_uid": floor_uid,
+		"name": str(floor_res["name"]),
+		"layers": floor_layers,
+		"layers_by_kind": floor_layers,
+	}
+
+
+func attach_existing_floor_to_scene(
+	world: Dictionary,
+	scene_uid: String,
+	floor_uid: String,
+	make_default: bool = false
+) -> Dictionary:
+	if not has_scene_repository_state(world):
+		return build_failed("scene_repository_not_initialized")
+	if not is_valid_uid(floor_uid) or not (floor_uid in _extract_world_floor_uids(world)):
+		return build_failed("unknown_floor_uid")
+
+	var state: Dictionary = _get_scene_box_state_read(world)
+	var scenes: Array = state.get("scenes", [])
+	var target_row: Dictionary = _find_scene_row(scenes, scene_uid)
+	if target_row.is_empty():
+		return build_failed("unknown_scene_uid")
+
+	var prev_owner_uid: String = get_scene_for_floor(world, floor_uid)
+	if prev_owner_uid == scene_uid:
+		if make_default:
+			target_row["default_floor_uid"] = floor_uid
+		return {"ok": true, "scene_uid": scene_uid, "floor_uid": floor_uid, "moved": false}
+
+	if not prev_owner_uid.is_empty():
+		var prev_row: Dictionary = _find_scene_row(scenes, prev_owner_uid)
+		if not prev_row.is_empty():
+			var prev_floors: Array = prev_row.get("floor_uids", [])
+			if prev_floors.size() <= 1:
+				return build_failed("cannot_empty_source_scene")
+			prev_floors.erase(floor_uid)
+			if str(prev_row.get("default_floor_uid", "")) == floor_uid:
+				prev_row["default_floor_uid"] = str(prev_floors[0])
+			var views_var: Variant = state.get("host_views", null)
+			if views_var is Dictionary and (views_var as Dictionary).has(prev_owner_uid):
+				var vrow_var: Variant = (views_var as Dictionary)[prev_owner_uid]
+				if vrow_var is Dictionary and str((vrow_var as Dictionary).get("active_floor_uid", "")) == floor_uid:
+					(vrow_var as Dictionary)["active_floor_uid"] = str(prev_row["default_floor_uid"])
+
+	var target_floors: Array = target_row.get("floor_uids", [])
+	if not (floor_uid in target_floors):
+		target_floors.append(floor_uid)
+	if make_default or str(target_row.get("default_floor_uid", "")).is_empty():
+		target_row["default_floor_uid"] = floor_uid
+
+	var cur_active_floor: String = str((world.get("catalog", {}) as Dictionary).get("active_floor_uid", ""))
+	if cur_active_floor == floor_uid:
+		state["host_active_scene_uid"] = scene_uid
+		_mark_host_scene_visited(state, scene_uid)
+
+	return {"ok": true, "scene_uid": scene_uid, "floor_uid": floor_uid, "moved": true}
+
+
+func set_active_scene(
+	world: Dictionary,
+	scene_uid: String,
+	floor_uid: String = "",
+	mark_host_visited: bool = true
+) -> Dictionary:
+	if not has_scene_repository_state(world):
+		return build_failed("scene_repository_not_initialized")
+	var state: Dictionary = _get_scene_box_state_read(world)
+	var scenes: Array = state.get("scenes", [])
+	var row: Dictionary = _find_scene_row(scenes, scene_uid)
+	if row.is_empty():
+		return build_failed("unknown_scene_uid")
+
+	var scene_floors: Array = row.get("floor_uids", [])
+	if scene_floors.is_empty():
+		return build_failed("empty_scene_floors")
+
+	var target_floor: String = floor_uid.strip_edges()
+	if target_floor.is_empty():
+		target_floor = str(row.get("default_floor_uid", scene_floors[0]))
+		if not (target_floor in scene_floors):
+			target_floor = str(scene_floors[0])
+	elif not (target_floor in scene_floors):
+		return build_failed("floor_not_in_scene")
+
+	var floor_set_res: Dictionary = set_active_floor(world, target_floor)
+	if not bool(floor_set_res.get("ok", false)):
+		return floor_set_res
+
+	state["host_active_scene_uid"] = scene_uid
+	if mark_host_visited:
+		_mark_host_scene_visited(state, scene_uid)
+
+	return {"ok": true, "scene_uid": scene_uid, "floor_uid": target_floor}
+
+
+func set_entry_scene(world: Dictionary, scene_uid: String) -> Dictionary:
+	if not has_scene_repository_state(world):
+		return build_failed("scene_repository_not_initialized")
+	var state: Dictionary = _get_scene_box_state_read(world)
+	var scenes: Array = state.get("scenes", [])
+	if _find_scene_row(scenes, scene_uid).is_empty():
+		return build_failed("unknown_scene_uid")
+	state["entry_scene_uid"] = scene_uid
+	_mark_host_scene_visited(state, scene_uid)
+	return {"ok": true, "entry_scene_uid": scene_uid}
+
+
+func rename_scene(world: Dictionary, scene_uid: String, new_name: String) -> Dictionary:
+	if not has_scene_repository_state(world):
+		return build_failed("scene_repository_not_initialized")
+	var state: Dictionary = _get_scene_box_state_read(world)
+	var row: Dictionary = _find_scene_row(state.get("scenes", []), scene_uid)
+	if row.is_empty():
+		return build_failed("unknown_scene_uid")
+	var clean_name: String = sanitize_catalog_name(new_name, str(row.get("name", "场景")))
+	row["name"] = clean_name
+	return {"ok": true, "scene_uid": scene_uid, "name": clean_name}
+
+
+func set_scene_default_floor(world: Dictionary, scene_uid: String, floor_uid: String) -> Dictionary:
+	if not has_scene_repository_state(world):
+		return build_failed("scene_repository_not_initialized")
+	var state: Dictionary = _get_scene_box_state_read(world)
+	var row: Dictionary = _find_scene_row(state.get("scenes", []), scene_uid)
+	if row.is_empty():
+		return build_failed("unknown_scene_uid")
+	var flist: Array = row.get("floor_uids", [])
+	if not (floor_uid in flist):
+		return build_failed("floor_not_in_scene")
+	row["default_floor_uid"] = floor_uid
+	return {"ok": true, "scene_uid": scene_uid, "default_floor_uid": floor_uid}
+
+
+func set_scene_cover_asset(world: Dictionary, scene_uid: String, cover_asset: String) -> Dictionary:
+	if not has_scene_repository_state(world):
+		return build_failed("scene_repository_not_initialized")
+	var state: Dictionary = _get_scene_box_state_read(world)
+	var row: Dictionary = _find_scene_row(state.get("scenes", []), scene_uid)
+	if row.is_empty():
+		return build_failed("unknown_scene_uid")
+	var cover_check: Dictionary = sanitize_cover_asset(cover_asset)
+	var safe_cover: String = str(cover_check["cover_asset"])
+	row["cover_asset"] = safe_cover
+	return {
+		"ok": true,
+		"scene_uid": scene_uid,
+		"cover_asset": safe_cover,
+		"cover_sanitized": bool(cover_check["sanitized"]),
+	}
+
+
+func set_scene_host_view(
+	world: Dictionary,
+	scene_uid: String,
+	camera_pos: Vector2,
+	camera_zoom: Vector2 = Vector2.ONE,
+	active_floor_uid: String = ""
+) -> Dictionary:
+	if not has_scene_repository_state(world):
+		return build_failed("scene_repository_not_initialized")
+	var state: Dictionary = _get_scene_box_state_read(world)
+	var row: Dictionary = _find_scene_row(state.get("scenes", []), scene_uid)
+	if row.is_empty():
+		return build_failed("unknown_scene_uid")
+	if not is_finite(camera_pos.x) or not is_finite(camera_pos.y):
+		return build_failed("invalid_camera_pos")
+	if not is_finite(camera_zoom.x) or not is_finite(camera_zoom.y) or camera_zoom.x <= 0.0 or camera_zoom.y <= 0.0:
+		return build_failed("invalid_camera_zoom")
+
+	var view_dict: Dictionary = {
+		"camera_pos": camera_pos,
+		"camera_zoom": camera_zoom,
+	}
+	var clean_af: String = active_floor_uid.strip_edges()
+	if not clean_af.is_empty():
+		var flist: Array = row.get("floor_uids", [])
+		if not (clean_af in flist):
+			return build_failed("floor_not_in_scene")
+		view_dict["active_floor_uid"] = clean_af
+
+	if not (state.get("host_views", null) is Dictionary):
+		state["host_views"] = {}
+	(state["host_views"] as Dictionary)[scene_uid] = view_dict
+	return {"ok": true, "scene_uid": scene_uid}
+
+
+func get_scene_uids(world: Dictionary) -> Array[String]:
+	var out: Array[String] = []
+	var state: Dictionary = _get_scene_box_state_read(world)
+	var scenes_var: Variant = state.get("scenes", [])
+	if scenes_var is Array:
+		for raw_scene: Variant in scenes_var as Array:
+			if raw_scene is Dictionary:
+				var suid: String = str((raw_scene as Dictionary).get("uid", ""))
+				if not suid.is_empty():
+					out.append(suid)
+	return out
+
+
+func get_entry_scene_uid(world: Dictionary) -> String:
+	var state: Dictionary = _get_scene_box_state_read(world)
+	return str(state.get("entry_scene_uid", ""))
+
+
+func get_active_scene_uid(world: Dictionary) -> String:
+	var state: Dictionary = _get_scene_box_state_read(world)
+	return str(state.get("host_active_scene_uid", ""))
+
+
+func get_scene_floors(world: Dictionary, scene_uid: String) -> Array[String]:
+	var out: Array[String] = []
+	var state: Dictionary = _get_scene_box_state_read(world)
+	var row: Dictionary = _find_scene_row(state.get("scenes", []), scene_uid)
+	if not row.is_empty():
+		var flist_var: Variant = row.get("floor_uids", [])
+		if flist_var is Array:
+			for fv: Variant in flist_var as Array:
+				var fuid: String = str(fv)
+				if not fuid.is_empty():
+					out.append(fuid)
+	return out
+
+
+func get_scene_default_floor_uid(world: Dictionary, scene_uid: String) -> String:
+	var state: Dictionary = _get_scene_box_state_read(world)
+	var row: Dictionary = _find_scene_row(state.get("scenes", []), scene_uid)
+	if row.is_empty():
+		return ""
+	var def_f: String = str(row.get("default_floor_uid", ""))
+	var flist: Array = row.get("floor_uids", [])
+	if not def_f.is_empty() and def_f in flist:
+		return def_f
+	return str(flist[0]) if not flist.is_empty() else ""
+
+
+func get_scene_for_floor(world: Dictionary, floor_uid: String) -> String:
+	if floor_uid.is_empty():
+		return ""
+	var state: Dictionary = _get_scene_box_state_read(world)
+	var scenes_var: Variant = state.get("scenes", [])
+	if scenes_var is Array:
+		for raw_scene: Variant in scenes_var as Array:
+			if raw_scene is Dictionary:
+				var row: Dictionary = raw_scene as Dictionary
+				var flist_var: Variant = row.get("floor_uids", [])
+				if flist_var is Array and floor_uid in (flist_var as Array):
+					return str(row.get("uid", ""))
+	return ""
+
+
+func get_scene_record(world: Dictionary, scene_uid: String) -> Dictionary:
+	var state: Dictionary = _get_scene_box_state_read(world)
+	var row: Dictionary = _find_scene_row(state.get("scenes", []), scene_uid)
+	return row.duplicate(true) if not row.is_empty() else {}
+
+
+func _ensure_world_modules_dict(world: Dictionary) -> Dictionary:
+	if not (world.get("modules", null) is Dictionary):
+		world["modules"] = {"version": MODULE_STATE_VERSION, "entries": {}}
+	var modules_dict: Dictionary = world["modules"]
+	if not (modules_dict.get("version", null) is int):
+		modules_dict["version"] = MODULE_STATE_VERSION
+	if not (modules_dict.get("entries", null) is Dictionary):
+		modules_dict["entries"] = {}
+	return modules_dict
+
+
+func _get_scene_box_state_read(world: Dictionary) -> Dictionary:
+	var mods_var: Variant = world.get("modules", null)
+	if not (mods_var is Dictionary):
+		return {}
+	var entries_var: Variant = (mods_var as Dictionary).get("entries", null)
+	if not (entries_var is Dictionary):
+		return {}
+	var entry_var: Variant = (entries_var as Dictionary).get(SCENE_BOX_MODULE_ID, null)
+	if not (entry_var is Dictionary):
+		return {}
+	var state_var: Variant = (entry_var as Dictionary).get("state", null)
+	return state_var as Dictionary if state_var is Dictionary else {}
+
+
+func _extract_world_floor_uids(world: Dictionary) -> Array[String]:
+	var out: Array[String] = []
+	var catalog_var: Variant = world.get("catalog", null)
+	if not (catalog_var is Dictionary):
+		return out
+	var floors_var: Variant = (catalog_var as Dictionary).get("floors", null)
+	if not (floors_var is Array):
+		return out
+	for raw_floor: Variant in floors_var as Array:
+		if raw_floor is Dictionary:
+			var fuid: String = str((raw_floor as Dictionary).get("floor_uid", ""))
+			if is_valid_uid(fuid) and not (fuid in out):
+				out.append(fuid)
+	return out
+
+
+func _find_scene_row(scenes_var: Variant, scene_uid: String) -> Dictionary:
+	if scene_uid.is_empty() or not (scenes_var is Array):
+		return {}
+	for raw_scene: Variant in scenes_var as Array:
+		if raw_scene is Dictionary and str((raw_scene as Dictionary).get("uid", "")) == scene_uid:
+			return raw_scene as Dictionary
+	return {}
+
+
+func _mark_host_scene_visited(state: Dictionary, scene_uid: String) -> void:
+	if scene_uid.is_empty():
+		return
+	if not (state.get("visited_scenes", null) is Dictionary):
+		state["visited_scenes"] = {}
+	var visited_dict: Dictionary = state["visited_scenes"]
+	if not (visited_dict.get("host", null) is Array):
+		visited_dict["host"] = []
+	var host_list: Array = visited_dict["host"]
+	if not (scene_uid in host_list) and host_list.size() < MAX_SCENES:
+		host_list.append(scene_uid)
 
 
 func create_layer(
@@ -1284,6 +1953,37 @@ func suppress_entity_fallback_box(entity: Dictionary) -> bool:
 	return false
 
 
+func _entity_component_ids(entity: Dictionary) -> Dictionary:
+	var ids: Dictionary = {}
+	var components_var: Variant = entity.get("components", null)
+	if components_var is Array:
+		for raw_comp: Variant in components_var as Array:
+			if raw_comp is Dictionary:
+				var scr: String = str((raw_comp as Dictionary).get("script", ""))
+				var cid: String = _component_id_from_script(scr)
+				if not cid.is_empty():
+					ids[cid] = true
+	return ids
+
+
+func _permits_entity_component(entity: Dictionary, comp_id: String) -> Dictionary:
+	var existing_ids: Dictionary = _entity_component_ids(entity)
+	if comp_id == "scene_box":
+		if str(entity.get("entity_type", "")) == "map":
+			return build_failed("scene_box_disallowed_on_map")
+		for conflict_id: String in SCENE_BOX_CONFLICT_COMPONENT_IDS:
+			if existing_ids.has(conflict_id):
+				return build_failed("component_conflict_with_scene_box:" + conflict_id)
+		return {"ok": true}
+	if comp_id in SCENE_BOX_CONFLICT_COMPONENT_IDS and existing_ids.has("scene_box"):
+		return build_failed("component_conflict_with_scene_box:" + comp_id)
+	if comp_id == "image_flip" and (existing_ids.has("obstacle") or existing_ids.has("area")):
+		return build_failed("component_conflict_with_image_flip")
+	if comp_id in ["obstacle", "area"] and existing_ids.has("image_flip"):
+		return build_failed("component_conflict_with_image_flip")
+	return {"ok": true}
+
+
 func append_entity_component(
 	entity: Dictionary,
 	script_path: String,
@@ -1311,6 +2011,10 @@ func append_entity_component(
 	if comp_id.is_empty() or comp_id == "visual" or comp_id == "permission":
 		return build_failed("invalid_component_id")
 
+	var pair_check: Dictionary = _permits_entity_component(entity, comp_id)
+	if not bool(pair_check.get("ok", false)):
+		return pair_check
+
 	var record: Dictionary = {
 		"script": clean_script,
 		"state": state.duplicate(true),
@@ -1328,6 +2032,203 @@ func append_entity_component(
 
 	components.append(record)
 	return {"ok": true, "index": components.size() - 1, "replaced": false}
+
+
+func make_scene_box_state(
+	target_scene_uid: String,
+	preview_policy: String = "visited_unlock",
+	enter_policy: String = "players_allowed",
+	cover_asset: String = ""
+) -> Dictionary:
+	var clean_target: String = sanitize_text(target_scene_uid).strip_edges().to_lower()
+	if not clean_target.is_empty() and not is_valid_uid(clean_target):
+		return build_failed("invalid_target_scene_uid")
+
+	var clean_preview: String = preview_policy.strip_edges()
+	var norm_preview: String = clean_preview if clean_preview in SCENE_BOX_PREVIEW_POLICIES else "visited_unlock"
+
+	var clean_enter: String = enter_policy.strip_edges()
+	var norm_enter: String = clean_enter if clean_enter in SCENE_BOX_ENTER_POLICIES else "players_allowed"
+
+	var cover_check: Dictionary = sanitize_cover_asset(cover_asset)
+	var safe_cover: String = str(cover_check["cover_asset"])
+
+	return {
+		"ok": true,
+		"cover_asset": safe_cover,
+		"cover_sanitized": bool(cover_check["sanitized"]),
+		"state": {
+			"schema_version": 1,
+			"target_scene_uid": clean_target,
+			"preview_policy": norm_preview,
+			"enter_policy": norm_enter,
+			"cover_asset": safe_cover,
+			"seed_from_visual": false,
+		},
+	}
+
+
+func _resolve_scene_box_permissions(
+	all_players_can_enter: bool,
+	owner_player_ids: Array
+) -> Dictionary:
+	var perm_state: Dictionary = make_permission_state("", owner_player_ids, all_players_can_enter, true)
+	var clean_owners: PackedStringArray = perm_state["owner_player_ids"]
+	var enter_policy: String = "players_allowed" if (all_players_can_enter or not clean_owners.is_empty()) else "host_only"
+	return {
+		"permission_state": perm_state,
+		"enter_policy": enter_policy,
+	}
+
+
+func append_scene_box_entity(
+	world: Dictionary,
+	floor_uid: String,
+	layer_uid: String,
+	source_id: String,
+	label: String,
+	center_world: Vector2,
+	target_scene_uid: String,
+	side_world: float = SCENE_BOX_DEFAULT_SIDE_WORLD,
+	cover_asset: String = "",
+	preview_policy: String = "visited_unlock",
+	all_players_can_enter: bool = true,
+	owner_player_ids: Array = [],
+	hidden_from_players: bool = false,
+	locked: bool = false,
+	rotation_rad: float = 0.0,
+	id_namespace: String = DEFAULT_ID_NAMESPACE
+) -> Dictionary:
+	if floor_uid.is_empty() or layer_uid.is_empty():
+		return build_failed("missing_target_floor_or_layer")
+
+	var clean_target: String = sanitize_text(target_scene_uid).strip_edges().to_lower()
+	if not clean_target.is_empty() and not is_valid_uid(clean_target):
+		return build_failed("invalid_target_scene_uid")
+	if not clean_target.is_empty() and has_scene_repository_state(world):
+		if not (clean_target in get_scene_uids(world)):
+			return build_failed("unknown_target_scene_uid")
+
+	var perm_bundle: Dictionary = _resolve_scene_box_permissions(all_players_can_enter, owner_player_ids)
+	var box_built: Dictionary = make_scene_box_state(
+		clean_target,
+		preview_policy,
+		str(perm_bundle["enter_policy"]),
+		cover_asset
+	)
+	if not bool(box_built.get("ok", false)):
+		return box_built
+
+	var resolved_floor: String = get_floor_for_layer(world, layer_uid)
+	var target_floor: String = resolved_floor if not resolved_floor.is_empty() else floor_uid
+
+	var safe_side: float = clampf(
+		side_world if is_finite(side_world) else SCENE_BOX_DEFAULT_SIDE_WORLD,
+		SCENE_BOX_MIN_SIDE_WORLD,
+		SCENE_BOX_MAX_SIDE_WORLD
+	)
+	var safe_cover: String = str(box_built["cover_asset"])
+	var visual: Dictionary = make_sprite_visual(safe_cover, DEFAULT_SPRITE_FALLBACK_COLOR, {})
+	var clean_label: String = label if not sanitize_text(label).strip_edges().is_empty() else "场景盒子"
+	var safe_center: Vector2 = sanitize_finite_vec2(center_world, Vector2.ZERO)
+
+	var entity: Dictionary = append_entity(
+		world,
+		target_floor,
+		layer_uid,
+		source_id,
+		clean_label,
+		safe_center,
+		Vector2(safe_side, safe_side),
+		rotation_rad,
+		Vector2.ONE,
+		1.0,
+		visual,
+		false,
+		hidden_from_players,
+		id_namespace,
+		DEFAULT_FOOTPRINT_RADIUS,
+		locked,
+		perm_bundle["permission_state"] as Dictionary
+	)
+
+	var comp_res: Dictionary = append_entity_component(entity, COMP_SCENE_BOX_SCRIPT, box_built["state"] as Dictionary, false)
+	if not bool(comp_res.get("ok", false)):
+		return comp_res
+
+	return {
+		"ok": true,
+		"entity_id": str(entity.get("id", "")),
+		"entity": entity,
+		"cover_asset": safe_cover,
+		"cover_sanitized": bool(box_built["cover_sanitized"]),
+	}
+
+
+func attach_scene_box_to_entity(
+	world: Dictionary,
+	entity_id: String,
+	target_scene_uid: String,
+	cover_asset: String = "",
+	preview_policy: String = "visited_unlock",
+	all_players_can_enter: bool = true,
+	owner_player_ids: Array = []
+) -> Dictionary:
+	var entity: Dictionary = find_entity_by_id(world, entity_id)
+	if entity.is_empty():
+		return build_failed("entity_not_found")
+
+	var pair_check: Dictionary = _permits_entity_component(entity, "scene_box")
+	if not bool(pair_check.get("ok", false)):
+		return pair_check
+
+	var clean_target: String = sanitize_text(target_scene_uid).strip_edges().to_lower()
+	if not clean_target.is_empty() and not is_valid_uid(clean_target):
+		return build_failed("invalid_target_scene_uid")
+	if not clean_target.is_empty() and has_scene_repository_state(world):
+		if not (clean_target in get_scene_uids(world)):
+			return build_failed("unknown_target_scene_uid")
+
+	var perm_bundle: Dictionary = _resolve_scene_box_permissions(all_players_can_enter, owner_player_ids)
+	var box_built: Dictionary = make_scene_box_state(
+		clean_target,
+		preview_policy,
+		str(perm_bundle["enter_policy"]),
+		cover_asset
+	)
+	if not bool(box_built.get("ok", false)):
+		return box_built
+
+	var cur_size: Vector2 = sanitize_finite_vec2(entity.get("entity_size", Vector2(SCENE_BOX_DEFAULT_SIDE_WORLD, SCENE_BOX_DEFAULT_SIDE_WORLD)), Vector2(SCENE_BOX_DEFAULT_SIDE_WORLD, SCENE_BOX_DEFAULT_SIDE_WORLD))
+	var sq_side: float = clampf(maxf(cur_size.x, cur_size.y), SCENE_BOX_MIN_SIDE_WORLD, SCENE_BOX_MAX_SIDE_WORLD)
+	entity["entity_size"] = Vector2(sq_side, sq_side)
+	entity["selectable_in_select_mode"] = false
+	if entity.get("xform", null) is Dictionary:
+		(entity["xform"] as Dictionary)["scale"] = Vector2.ONE
+
+	var components_var: Variant = entity.get("components", null)
+	if not (components_var is Array) or (components_var as Array).size() < 2:
+		return build_failed("invalid_core_components_prefix")
+	var components: Array = components_var
+
+	var safe_cover: String = str(box_built["cover_asset"])
+	if not safe_cover.is_empty() and components[0] is Dictionary:
+		var c0_state_var: Variant = (components[0] as Dictionary).get("state", null)
+		if c0_state_var is Dictionary:
+			(c0_state_var as Dictionary)["sprite_path"] = safe_cover
+	if components[1] is Dictionary:
+		(components[1] as Dictionary)["state"] = (perm_bundle["permission_state"] as Dictionary).duplicate(true)
+
+	var comp_res: Dictionary = append_entity_component(entity, COMP_SCENE_BOX_SCRIPT, box_built["state"] as Dictionary, false)
+	if not bool(comp_res.get("ok", false)):
+		return comp_res
+
+	return {
+		"ok": true,
+		"entity_id": entity_id,
+		"cover_asset": safe_cover,
+		"cover_sanitized": bool(box_built["cover_sanitized"]),
+	}
 
 
 func sanitize_module_value(v: Variant, depth: int = 0) -> Variant:
@@ -1361,6 +2262,18 @@ func bounded_variant_size_estimate(val: Variant, depth: int = 0) -> int:
 	if depth > 32:
 		return -1
 	match typeof(val):
+		TYPE_NIL:
+			return 8
+		TYPE_BOOL, TYPE_INT, TYPE_FLOAT:
+			return 16
+		TYPE_VECTOR2, TYPE_VECTOR2I:
+			return 24
+		TYPE_RECT2, TYPE_RECT2I, TYPE_VECTOR3, TYPE_VECTOR3I, TYPE_COLOR, TYPE_VECTOR4, TYPE_VECTOR4I, TYPE_PLANE, TYPE_QUATERNION:
+			return 40
+		TYPE_TRANSFORM2D, TYPE_AABB, TYPE_BASIS:
+			return 64
+		TYPE_TRANSFORM3D, TYPE_PROJECTION:
+			return 80
 		TYPE_STRING, TYPE_STRING_NAME, TYPE_NODE_PATH:
 			return 16 + str(val).length() * 4
 		TYPE_PACKED_BYTE_ARRAY:
@@ -1485,7 +2398,8 @@ func set_module_state(
 		return build_failed("module_entries_limit_exceeded")
 
 	var copied_state: Dictionary = state.duplicate(true)
-	if var_to_bytes(copied_state).size() > MAX_MODULE_ENTRY_BYTES:
+	var entry_bounded: int = bounded_variant_size_estimate(copied_state)
+	if entry_bounded < 0 or entry_bounded > MAX_MODULE_ENTRY_BYTES or var_to_bytes(copied_state).size() > MAX_MODULE_ENTRY_BYTES:
 		return build_failed("module_entry_size_limit")
 
 	var prev_present: bool = entries.has(clean_id)
@@ -1494,7 +2408,8 @@ func set_module_state(
 		"version": version,
 		"state": copied_state,
 	}
-	if var_to_bytes(modules_dict).size() > MAX_MODULE_TOTAL_BYTES:
+	var total_bounded: int = bounded_variant_size_estimate(modules_dict)
+	if total_bounded < 0 or total_bounded > MAX_MODULE_TOTAL_BYTES or var_to_bytes(modules_dict).size() > MAX_MODULE_TOTAL_BYTES:
 		if prev_present:
 			entries[clean_id] = prev_value
 		else:

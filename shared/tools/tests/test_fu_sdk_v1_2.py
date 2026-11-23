@@ -484,7 +484,7 @@ func _initialize() -> void:
 
 	var dirty_mod: Variant = b_core.sanitize_module_data({"ok_num": 1, "nan_val": NAN, "inf_val": INF, "nested": [NAN, "hi"]})
 	var fit_small: bool = b_core.can_fit_module_state("demo_mod", 1, {"summary": "small"})
-	var fit_huge: bool = b_core.can_fit_module_state("huge_mod", 1, {"blob": "X".repeat(2 * 1024 * 1024)})
+	var fit_huge: bool = b_core.can_fit_module_state("huge_mod", 1, {"blob": "X".repeat(5 * 1024 * 1024)})
 	b_core.set_module_state("demo_mod", 1, dirty_mod as Dictionary)
 
 	var core_world: Dictionary = b_core.get_world()
@@ -1089,7 +1089,7 @@ class TestFuSdkV12HeadlessGodot(unittest.TestCase):
 
     def test_sdk_core_v1_2_facade_and_world_builder(self) -> None:
         r = self.results["sdk_core"]
-        self.assertEqual(r["sdk_version"], "1.2.0")
+        self.assertEqual(r["sdk_version"], "1.3.0")
         self.assertTrue(r["factories_ok"])
 
         # Coercers & ImportSession option safety
