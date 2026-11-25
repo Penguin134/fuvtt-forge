@@ -2,10 +2,10 @@
 
 > [!WARNING]
 > **Playtest 内测阶段免责声明**  
-> 当前处于 Steam Playtest 内测阶段，后续 Mod 接口可能存在变更。本文档基于官方现役 `Practice` 主线源码（`origin/codex/playtest-v060-20261122`）与本地 Steam 客户端实测核验沉淀。  
-> **实测验证基准**：现役 `Practice` 主线 `v0.0.60`（Git `cc3d43a5`）/ Steam Playtest `v0.0.60`（Commit `cc3d43a`）  
+> 当前处于 Steam Playtest 内测阶段，后续 Mod 接口可能存在变更。本文档基于官方现役 `Practice` 主线源码（`origin/codex/playtest-v060-20261122`）与本地 Steam 客户端及 Playtest `v0.0.57`–`v0.0.62` 更新记录核验沉淀。  
+> **实测验证基准**：现役 `Practice` 主线 `v0.0.60`（Git `cc3d43a5`）/ Steam Playtest `v0.0.57`–`v0.0.62`（本地端 `v0.0.60`，Commit `cc3d43a`）  
 > **底盘引擎**：`Godot Engine v4.8.beta1.mono.official` (64-bit) + `.NET 10 CoreCLR` (`Practice.dll`)  
-> **验证日期**：`2026-11-23`
+> **验证日期**：`2026-11-24`
 
 ---
 
@@ -214,7 +214,7 @@ scenes/session/plugins/plugin_import.gd 调用 load(_row.entry_path).new()
 - **推荐两阶段顺序**：
   1. 调用 `host.empty_world()` 获取宿主标准世界结构（`fus.practice.world` v3 + `fus.floor_layers.v2`）。
   2. 先提交墙体/门窗/几何预览并调用 `host.finish_geometry_preview()`，再发布本地图片或通过 `host.archive_image(url, proxy)` 下载归档远端大体积图片，降低导入界面卡顿。
-  3. 遇到非致命告警（如跳过退化几何、零长度门或缺失资源）调用 `host.warn(text)`（最多保留 100 条，最终写入会话备注）。
+  3. 遇到非致命告警（如跳过退化几何、零长度门或未启用可选模块调用）调用 `host.warn(text)`（`ImportBridge` 最多保留 `100` 条唯一警告且 `metadata.notes` 截断至 `7000` 字符）。使用 `shared/sdk/fu_sdk/logging/log_bus.gd`（`LogBus.attach_import_host(host, forward_reports)`）时，SDK 会自动执行去重与 `100 条 / 7000 字符` 安全上限保护。
   4. 返回：
      ```gdscript
      {
@@ -228,7 +228,7 @@ scenes/session/plugins/plugin_import.gd 调用 load(_row.entry_path).new()
      ```
 - **`ImportBridge.run()` 实测默认行为**：
   - **战役名由选中文件名推导**：`ImportBridge.inspect()` / `run()` 会直接以选中文件名（去扩展名）作为战役标题（例如选择解压目录内的 `world.json` 时，宿主固定将活动名显示为 `"world"`）。插件应通过 `host.warn()` 告知用户，并将真实世界名称保留在 `world.modules` 与场景/楼层名中。
-  - **内置可选模块默认关闭但状态无损保留**：`ImportBridge.run()` 硬编码设置 `metadata.module_choices = []`，因此 `grid_alignment`、`simple_fog`、`scene_box` 等可选模块导入后在UI开关上默认未勾选；但对于 **`world.modules.entries["scene_box"]`**，`DesktopWorldState._restore_snapshot()` 仍会在载入世界时读取其场景目录与归属索引，`FeatureManager.capture_persistent_state()` 亦会在后续保存时保留所有未启用模块的持久化数据；其余交互能力（如 `grid_alignment` / `simple_fog` / 悬停进盒过场）需 GM 在战役设置中启用（插件可通过 `host.warn()` 提醒）。
+  - **内置可选模块默认关闭但状态无损保留**：`ImportBridge.run()` 硬编码设置 `metadata.module_choices = []`，因此 `grid_alignment`、`simple_fog`、`scene_box`、`checklist`、`drawing` 等可选模块在导入后默认处于未启用状态；相应地，`fu_sdk` 的 `ModuleRegistry` 默认将这些可选模块标记为 `"disabled"`（`v0.0.61`–`v0.0.62` Playtest 禁用的 `campaign_time` 与 `dnd_opportunity` 标记为 `"playtest_blocked"`），并在 `"preserve"`（默认）与 `"skip"` 策略下自动发出明确警告。对于 **`world.modules.entries["scene_box"]`**，`DesktopWorldState._restore_snapshot()` 仍会在载入世界时读取其场景目录与归属索引，`FeatureManager.capture_persistent_state()` 亦会在后续保存时无损保留所有未启用或已屏蔽模块的持久化数据；其余交互能力需 GM 在战役设置中启用（插件可通过 `LogBus` / `host.warn()` 提醒）。
   - **内置 `fobr_world_import` 演变**：`v0.0.60` 起内置 `fobr_world_import` 升至 **`0.5.2`**（新增 `skipped_point_strokes` 零长度线段告警），且 `CampaignImageFiles.references()` 同时扫描 `comp_visual.gd`（`sprite_path`）与 `comp_scene_box.gd`（`cover_asset`，注意 `archived_references()` 仅检查 `comp_visual` 且 `source_info == {}`）。
 
 ### 3.2 外部安装、版本比较规则与本地调试工作流
@@ -258,6 +258,18 @@ scenes/session/plugins/plugin_import.gd 调用 load(_row.entry_path).new()
    - **`ImageHeader` 上限与 `asset://` 扩展名白名单差异**：`ImageHeader` 硬限制 **`MAX_SIDE = 32768`**、**`MAX_PIXELS = 134217728`**（`1 <= w, h <= 32768` 且 `w * h <= 134217728`）；`CampaignImageFiles` 与 `SharedAssetStore.Publish` 对 `asset://` 引用接受 **`png`、`jpg`、`jpeg`、`webp`、`bmp`**，**明确拒绝 `.svg` 与 `.gif`**（不同于 `res://` 额外放行 `.svg`）。因此从本地或归档提取的 **`.bmp` 与 `.svg` 应先在插件内解码/栅格化并经 `save_png_to_buffer()` 统一转为 `.png`**，再行发布。
    - **前置魔数与流式头校验（杜绝 Godot `ERROR:` 日志）**：在调用 `Image.load_*_from_buffer()` 前，必须先做二进制魔数（PNG/JPG/WEBP/BMP/GIF）与图像头/流校验，探测 `<svg` 时必须使用 `.get_string_from_ascii()`（严禁对未知二进制字节调用 `.get_string_from_utf8()` 触发 `Unicode parsing error`），并直接拒收 `.gif`（`GIF8`）及损坏字节流，避免 Godot C++ 层向 stderr 打印 `ERROR:` 导致 `verify-host` 失败。
    - **自发布文件追踪与 `MockHostBridge` 回退**：`ImportBridge._created_assets` 仅追踪 `archive_image()` 创建的文件；插件直接调用 `SharedAssetStore.Publish()` 写入 `destination/assets/` 的新文件须自行记录并在用户取消或失败时清理。在 `verify-host` 的 `MockHostBridge` 无头测试环境下不存在 `SharedAssetStore.cs` 与 `host.destination`/`host.root`，插件应先嗅探 `ResourceLoader.exists("res://services/storage/SharedAssetStore.cs")` 与非空 `host.destination`，未命中时跳过写盘并返回合法 `asset://<sha256>.<ext>`（推荐直接复用 `fu_sdk/modules/asset_publisher.gd`）。
+
+### 3.4 运行时 UI 限制实证与控制台日志插件范式（`mods/sdk-log-console/`）
+
+经对只读官方源码仓 `<FUS_REPO_DIR>`（`codex/playtest-v060-20261122`，Commit `cc3d43a5`，`config/version="0.0.60"`）逐文件核验，外部 `fus.session-plugin.v1` 插件**不支持**在桌面世界（`DesktopScreen`）中挂载任何运行时 `Control`、`Window`、`PopupPanel` 或 `ui.desktop_panels` 面板：
+
+1. **Manifest 契约无 UI / 面板 / Autoload 字段**：`<FUS_REPO_DIR>/services/plugins/PluginPackageJob.cs:98-116, 247, 267` 强校验 `schema == "fus.session-plugin.v1"`、`host_api == 1`、`scope == "session"`、`settings`（`<= 32` 项且仅限 `"bool"` / `"string"`）、`import_extensions`（`<= 8` 项）与 ZIP 条目数 `2..1000`，不含任何桌面面板或场景挂载字段。
+2. **插件服务仅驻留局外 `SessionScreen`**：`<FUS_REPO_DIR>/services/plugins/session_plugins.gd:80` 注释明确指出“`App` 持有局外插件；开桌页只借用，不把安装服务带进世界”；`<FUS_REPO_DIR>/scenes/app/app.gd:79, 118, 260, 403-495` 仅将 `$SessionPlugins` 绑定到 `_session.bind_plugins($SessionPlugins)`，在 `_enter_desktop`（403–495 行）中绝不传入外部插件服务；`<FUS_REPO_DIR>/scenes/session/session_screen.gd:42-46, 72-76, 475-477` 仅将插件用于 `SessionSettings`、`PluginActions` 与 `$PluginImport`。
+3. **入口强制 `RefCounted` 且运行于 `WorkerThreadPool`**：`<FUS_REPO_DIR>/scenes/session/plugins/plugin_import.gd:118-149, 248` 明确拦截非 `RefCounted` 入口（若为 `Node` 则直接 `instance.free()`）并在后台线程 `WorkerThreadPool.add_task(...)` 执行 `inspect_import`/`prepare_import`；`<FUS_REPO_DIR>/scenes/session/plugins/session_plugin_actions.gd:17, 26` 与 `session_plugin_drop.gd:40-48, 62-83` 在 `import_extensions` 为空时直接隐藏按钮与拖放目标。
+4. **桌面扩展与面板槽位仅限受信任内置模块**：`<FUS_REPO_DIR>/scenes/desktop/desktop_screen.gd:102` 仅从 `FeatureCatalog.trusted_entries()` 启动 `$Extensions/FeatureManager`；`<FUS_REPO_DIR>/scenes/extension/feature_manager.gd:245-246, 314` 声明目录只信任内置代码且未安装模块仅保留原始状态；`<FUS_REPO_DIR>/scenes/desktop/layout/desktop_panel_host.gd:94-106, 159-166` 要求 `&"ui.desktop_panels"` 提供方必须为 `ExtensionBase` 子节点且具备活跃 `ExtensionContext` 与 `PackedScene`（`Control` 实现 `bind_provider`/`deactivate`）。
+5. **内置调试门禁与零 `.pck`/UGC 加载器**：`<FUS_REPO_DIR>/services/debug_tools.gd:120, 127, 138-143, 335-349` 将 `F3` 调试工具与 `record_event` 门禁在 `OS.is_debug_build()` 下，正式客户端由 `<FUS_REPO_DIR>/services/diagnostic_logger.gd:15-51` 通过 `OS.add_logger` 捕获引擎输出供 `F2` 诊断导出；`<FUS_REPO_DIR>/docs/research/session-plugins-20261025/README.md:29-35` 与全仓 `load_resource_pack`/`ISteamUGC` 检索均证实外部插件不进入 `FeatureManager` 或桌面运行时 UI。
+
+因此，工作区在 `mods/sdk-log-console/` 落地了完全符合宿主架构的替代范式：以标准 `fus.session-plugin.v1` `RefCounted` 插件订阅 **`LogBus`**（`logging/log_bus.gd`）并驱动 **`ModuleRegistry`**（`plugins/module_registry.gd`）审计各原生模块，将结构化调试/警告日志安全输出至 **`host.report` 进度条、`host.warn`（`metadata.notes` 受 `100 / 7000` 守卫）、Godot 引擎日志流（`DiagnosticLogger`）以及可选的世界内 `checklist` / `drawing`（`text_ink`）日志看板**。
 
 ---
 

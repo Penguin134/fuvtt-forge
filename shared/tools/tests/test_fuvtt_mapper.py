@@ -1406,6 +1406,7 @@ class TestFuvttMapperWithGodot(unittest.TestCase):
         (sdk_copy / "adapters").mkdir(parents=True, exist_ok=True)
         shutil.copy2(SDK_DIR / "v1.gd", sdk_copy / "v1.gd")
         shutil.copy2(SDK_DIR / "adapters" / "host_v1_adapter.gd", sdk_copy / "adapters" / "host_v1_adapter.gd")
+        shutil.copytree(SDK_DIR / "utils", sdk_copy / "utils")
 
         (cls.probe_dir / "probe.gd").write_text(_PROBE_GD, encoding="utf-8", newline="\n")
 

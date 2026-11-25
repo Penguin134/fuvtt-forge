@@ -1,0 +1,66 @@
+{
+  "schema": "fus.session-plugin.v1",
+  "host_api": 1,
+  "scope": "session",
+  "id": "sdk_log_console",
+  "version": "0.1.0",
+  "name": "SDK Log Console",
+  "description": "基于 Fu vtt R3 LogBus 与 R2 ModuleRegistry 的控制台日志诊断插件（支持 .json/.log 审计、订阅收集与宿主安全通道输出）。",
+  "entry": "entry.gd",
+  "import_extensions": ["json", "log"],
+  "import_action_label": "运行 SDK 日志控制台诊断",
+  "settings": [
+    {
+      "id": "enabled_modules",
+      "type": "string",
+      "label": "声明已启用的原生模块（逗号分隔）",
+      "placeholder": "留空默认仅核心模块启用；可填如 simple_fog,checklist,drawing",
+      "default": ""
+    },
+    {
+      "id": "audit_modules",
+      "type": "string",
+      "label": "要审计的原生模块（逗号分隔）",
+      "placeholder": "simple_fog,campaign_time,checklist,drawing",
+      "default": "simple_fog,campaign_time,checklist,drawing"
+    },
+    {
+      "id": "disabled_policy",
+      "type": "string",
+      "label": "未启用模块策略（preserve 或 skip）",
+      "placeholder": "preserve 或 skip",
+      "default": "preserve"
+    },
+    {
+      "id": "min_level",
+      "type": "string",
+      "label": "最低日志级别（debug/info/warning/error）",
+      "placeholder": "debug",
+      "default": "debug"
+    },
+    {
+      "id": "forward_reports",
+      "type": "bool",
+      "label": "转发调试/信息日志到宿主进度条",
+      "default": true
+    },
+    {
+      "id": "emit_debug",
+      "type": "bool",
+      "label": "输出调试级详细诊断日志",
+      "default": true
+    },
+    {
+      "id": "emit_in_world",
+      "type": "bool",
+      "label": "在生成世界中输出日志看板（checklist + drawing）",
+      "default": true
+    },
+    {
+      "id": "stress_warnings",
+      "type": "bool",
+      "label": "触发 120 条警告以验证宿主 100/7000 上限保护",
+      "default": false
+    }
+  ]
+}

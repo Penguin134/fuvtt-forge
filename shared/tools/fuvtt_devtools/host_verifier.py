@@ -64,6 +64,12 @@ var _loaded_scripts: Array[String] = []
 class MockHostBridge:
 	extends RefCounted
 
+	var root: String = ""
+	var cache: String = ""
+	var destination: String = ""
+	var file: String = ""
+	var settings: Dictionary = {}
+	var expected_sha256: String = ""
 	var progress_log: Array[String] = []
 	var warnings: Array[String] = []
 	var archived_urls: Array[String] = []
@@ -217,6 +223,13 @@ func _run() -> void:
 		"serialized_bytes": 0,
 		"inspect_summary": {},
 		"prepare_counts": {},
+		"sdk_probe": {
+			"sdk_bundled": false,
+			"sdk_version": "",
+			"log_bus_ok": false,
+			"module_registry_ok": false,
+			"plugin_sdks_resolved": 0,
+		},
 	}
 
 	_expect(not pkg_root.is_empty(), "pkg-root argument provided")
@@ -270,6 +283,9 @@ func _run() -> void:
 				options[key] = field.get("default")
 
 	var host := MockHostBridge.new()
+	host.file = sample_path
+	host.settings = options.duplicate(true)
+	host.expected_sha256 = FileAccess.get_sha256(sample_path) if FileAccess.file_exists(sample_path) else ""
 
 	# 3. Call inspect_import()
 	var inspect_raw: Variant = plugin_obj.call("inspect_import", sample_path, options.duplicate(true), host)
@@ -278,13 +294,33 @@ func _run() -> void:
 		var inspect_res: Dictionary = inspect_raw as Dictionary
 		_expect(bool(inspect_res.get("ok", false)),
 				"inspect_import ok == true (reason=%s)" % str(inspect_res.get("reason", "")))
+		var name_v: Variant = inspect_res.get("name", null)
+		_expect(name_v is String, "inspect_import returns name String")
+		var src_bytes_v: Variant = inspect_res.get("source_bytes", null)
+		_expect(typeof(src_bytes_v) == TYPE_INT and int(src_bytes_v) >= 0,
+				"inspect_import returns non-negative int source_bytes")
+		var dec_bytes_v: Variant = inspect_res.get("decoded_bytes", null)
+		_expect(typeof(dec_bytes_v) == TYPE_INT and int(dec_bytes_v) >= 0,
+				"inspect_import returns non-negative int decoded_bytes")
+		var uniq_img_v: Variant = inspect_res.get("unique_images", null)
+		_expect(typeof(uniq_img_v) == TYPE_INT and int(uniq_img_v) >= 0,
+				"inspect_import returns non-negative int unique_images")
+		var assets_v: Variant = inspect_res.get("assets", null)
+		_expect(assets_v is Dictionary, "inspect_import returns assets Dictionary")
 		var sha_str: String = String(inspect_res.get("sha256", ""))
 		var expected_sha: String = FileAccess.get_sha256(sample_path)
 		_expect(sha_str.length() == 64 and sha_str == expected_sha,
 				"inspect_import returns 64-hex sha256 matching sample file")
 		var counts_v: Variant = inspect_res.get("counts", null)
-		_expect(counts_v is Dictionary and (counts_v as Dictionary).has("unsupported"),
-				"inspect_import returns counts Dictionary with unsupported key")
+		_expect(counts_v is Dictionary, "inspect_import returns counts Dictionary")
+		if counts_v is Dictionary:
+			var counts_d: Dictionary = counts_v as Dictionary
+			for req_ck: String in [
+				"records", "images", "selected_images", "maps", "characters",
+				"objects", "text", "drawings", "walls", "doors", "hidden", "unsupported",
+			]:
+				_expect(counts_d.has(req_ck) and typeof(counts_d.get(req_ck)) == TYPE_INT and int(counts_d.get(req_ck)) >= 0,
+						"inspect_import counts has non-negative int '%s'" % req_ck)
 		report_data["inspect_summary"] = {
 			"ok": bool(inspect_res.get("ok", false)),
 			"sha256": sha_str,
@@ -306,6 +342,12 @@ func _run() -> void:
 		if world_raw is Dictionary:
 			var world: Dictionary = world_raw as Dictionary
 			_validate_world_invariants(world, report_data)
+			if String(manifest.get("id", "")) == "sdk_log_console":
+				_expect(host.progress_log.size() > 0, "sdk_log_console emits host.report progress entries")
+				var mods_dict: Variant = world.get("modules", {})
+				var entries_dict: Variant = (mods_dict as Dictionary).get("entries", {}) if mods_dict is Dictionary else {}
+				_expect(entries_dict is Dictionary and (entries_dict as Dictionary).has("sdk_log_console"),
+						"sdk_log_console writes world.modules.entries.sdk_log_console")
 			# 5. Real Godot binary serialization roundtrip (`var_to_bytes` -> `bytes_to_var`)
 			var encoded: PackedByteArray = var_to_bytes(world)
 			_expect(encoded.size() > 0, "var_to_bytes(world) succeeds without object errors")
@@ -317,8 +359,119 @@ func _run() -> void:
 				_expect(diff_msg.is_empty(),
 						"bytes_to_var(var_to_bytes(world)) lossless roundtrip" + (": " + diff_msg if not diff_msg.is_empty() else ""))
 
+	# 6. Enforce ImportBridge host warning caps (100 entries / 7000 joined chars)
+	_expect(host.warnings.size() <= 100,
+			"host.warnings count <= 100 (actual=%d)" % host.warnings.size())
+	var joined_warnings: String = "\n".join(host.warnings)
+	_expect(joined_warnings.length() <= 7000,
+			"host.warnings joined char length <= 7000 (actual=%d)" % joined_warnings.length())
+
+	# 7. Probe bundled modular FuSdk (LogBus / ModuleRegistry / 23 plugin SDKs / R2 policies)
+	if FileAccess.file_exists(pkg_root.path_join("lib/fu_sdk/v1.gd")):
+		_probe_bundled_modular_sdk(pkg_root, report_data)
+
 	report_data["warnings"] = host.warnings
 	_write_and_exit(report_path, report_data)
+
+
+func _probe_bundled_modular_sdk(pkg_root: String, report_data: Dictionary) -> void:
+	var sdk_path: String = pkg_root.path_join("lib/fu_sdk/v1.gd")
+	var sdk_scr: Script = load(sdk_path) as Script
+	_expect(sdk_scr != null and sdk_scr.can_instantiate(), "bundled lib/fu_sdk/v1.gd loads and instantiates")
+	if sdk_scr == null:
+		return
+
+	var sdk: RefCounted = sdk_scr.new()
+	var sdk_ver: String = str(sdk_scr.SDK_VERSION)
+	_expect(not sdk_ver.is_empty(), "FuSdk.SDK_VERSION is non-empty")
+
+	var probe_host := MockHostBridge.new()
+	var logger: RefCounted = sdk.create_logger({"emit_to_engine": false})
+	_expect(logger != null, "sdk.create_logger returns LogBus instance")
+	var log_bus_ok: bool = false
+	if logger != null:
+		var observed_seqs: Array[int] = []
+		var sub_cb := func(entry: Dictionary) -> void:
+			observed_seqs.append(int(entry.get("seq", 0)))
+		var token: int = int(logger.subscribe(sub_cb))
+		logger.debug("verify_probe", "probe debug message", {"phase": "debug"})
+		logger.warn("verify_probe", "probe warning message", {"phase": "warn"})
+		var entries: Array = logger.get_entries()
+		var warns: Array = logger.get_warnings()
+		var unsub_ok: bool = bool(logger.unsubscribe(token))
+		log_bus_ok = (
+			int(logger.LEVEL_DEBUG) == 10
+			and int(logger.LEVEL_INFO) == 20
+			and int(logger.LEVEL_WARNING) == 30
+			and int(logger.LEVEL_ERROR) == 40
+			and observed_seqs.size() == 2
+			and entries.size() >= 2
+			and warns.size() >= 1
+			and unsub_ok
+		)
+	_expect(log_bus_ok, "bundled LogBus debug/warn/subscribe/get_entries/get_warnings/unsubscribe works")
+
+	var probe_session = sdk.create_session(probe_host, {})
+	var reg: RefCounted = sdk.create_module_registry(logger, probe_session)
+	_expect(reg != null, "sdk.create_module_registry returns ModuleRegistry instance")
+	var module_registry_ok: bool = false
+	if reg != null:
+		var catalog_list: Array = reg.list_modules(true)
+		var edit_enabled: bool = bool(reg.is_module_enabled("feature_edit_mode"))
+		var fog_enabled: bool = bool(reg.is_module_enabled("simple_fog"))
+		var ct_status: String = str(reg.get_module_status("campaign_time"))
+		var dnd_status: String = str(reg.get_module_status("dnd_opportunity"))
+		module_registry_ok = (
+			catalog_list.size() >= 33
+			and edit_enabled
+			and (not fog_enabled)
+			and ct_status == "playtest_blocked"
+			and dnd_status == "playtest_blocked"
+		)
+	_expect(module_registry_ok, "bundled ModuleRegistry catalog (>=33), core/disabled/playtest_blocked statuses verified")
+
+	var wb = sdk.create_world_builder(probe_session, 150.0)
+	var wb_init: Dictionary = wb.setup(probe_session, 150.0)
+	_expect(bool(wb_init.get("ok", false)), "bundled probe WorldBuilder.setup succeeds")
+
+	var plugin_ids: Array[String] = [
+		"feature_edit_mode", "feature_floor_system", "feature_layer_stack",
+		"feature_obstacle_authoring", "feature_entity_library",
+		"scene_box", "portal", "grid_alignment", "simple_fog",
+		"image_flip", "drag_movement", "drawing", "areas", "entity_notes",
+		"checklist", "resource_pool", "character_roster", "backpack",
+		"follow", "candidate_initiative", "dice", "campaign_time", "dnd_opportunity",
+	]
+	var resolved_count: int = 0
+	for mid: String in plugin_ids:
+		var psdk: Variant = wb.get_plugin_sdk(mid)
+		if psdk is RefCounted and String((psdk as RefCounted).MODULE_ID) == mid:
+			resolved_count += 1
+	_expect(resolved_count == 23,
+			"all 23 modular plugin SDKs resolve via WorldBuilder.get_plugin_sdk() (resolved=%d)" % resolved_count)
+
+	if bool(wb_init.get("ok", false)) and resolved_count == 23:
+		var wb_logger: RefCounted = wb.get_logger()
+		if wb_logger != null:
+			wb_logger.set_emit_to_engine(false)
+		wb.set_disabled_module_policy("preserve")
+		var preserve_res: Dictionary = wb.simple_fog().configure_fog({"history_enabled": true})
+		var preserve_warns: int = probe_host.warnings.size()
+		_expect(bool(preserve_res.get("ok", false)) and preserve_warns >= 1,
+				"R2 preserve policy emits warning and writes disabled simple_fog state")
+		wb.set_disabled_module_policy("skip")
+		var skip_res: Dictionary = wb.checklist().add_task("", wb.checklist().make_row("Skipped Task"))
+		_expect(not bool(skip_res.get("ok", true)) and bool(skip_res.get("skipped", false))
+				and probe_host.warnings.size() > preserve_warns,
+				"R2 skip policy emits warning and skips disabled checklist write")
+
+	report_data["sdk_probe"] = {
+		"sdk_bundled": true,
+		"sdk_version": sdk_ver,
+		"log_bus_ok": log_bus_ok,
+		"module_registry_ok": module_registry_ok,
+		"plugin_sdks_resolved": resolved_count,
+	}
 
 
 func _validate_world_invariants(world: Dictionary, report_data: Dictionary) -> void:
@@ -394,19 +547,56 @@ func _validate_world_invariants(world: Dictionary, report_data: Dictionary) -> v
 		var eid: String = String(ent.get("id", ""))
 		_expect(not eid.is_empty() and not entity_ids.has(eid), "entity[%d] has unique non-empty id" % idx)
 		entity_ids[eid] = true
+		if ent.has("properties"):
+			var ent_props_v: Variant = ent.get("properties", null)
+			_expect(ent_props_v is Dictionary, "entity[%d].properties is Dictionary" % idx)
+			if ent_props_v is Dictionary and (ent_props_v as Dictionary).has("z_index"):
+				var z_idx_v: Variant = (ent_props_v as Dictionary).get("z_index")
+				_expect(typeof(z_idx_v) == TYPE_INT and int(z_idx_v) == 0,
+						"entity[%d].properties.z_index == 0" % idx)
+
+		var esize_v: Variant = ent.get("entity_size", null)
+		_expect(
+			esize_v is Vector2
+			and is_finite((esize_v as Vector2).x)
+			and is_finite((esize_v as Vector2).y)
+			and (esize_v as Vector2).x >= 4.0
+			and (esize_v as Vector2).y >= 4.0,
+			"entity[%d].entity_size is finite Vector2 >= (4, 4)" % idx
+		)
+		_expect(
+			ent.get("selectable_in_select_mode", null) is bool,
+			"entity[%d].selectable_in_select_mode is bool" % idx
+		)
+		var fpr_v: Variant = ent.get("footprint_radius", null)
+		_expect(
+			typeof(fpr_v) == TYPE_FLOAT
+			and is_finite(float(fpr_v))
+			and float(fpr_v) >= 0.5
+			and float(fpr_v) <= 4096.0,
+			"entity[%d].footprint_radius is TYPE_FLOAT finite in [0.5, 4096.0]" % idx
+		)
+		_expect(
+			ent.get("fallback_color", null) is Color,
+			"entity[%d].fallback_color is Color" % idx
+		)
 
 		# Transform finiteness & non-zero scale
 		var xform_v: Variant = ent.get("xform", null)
 		_expect(xform_v is Dictionary, "entity[%d].xform is Dictionary" % idx)
 		if xform_v is Dictionary:
 			var xf: Dictionary = xform_v as Dictionary
+			_expect(
+				xf.size() == 3 and xf.has("pos") and xf.has("rot") and xf.has("scale"),
+				"entity[%d].xform has exact keys [pos, rot, scale]" % idx
+			)
 			var pos_v: Variant = xf.get("pos", null)
 			var rot_v: Variant = xf.get("rot", null)
 			var scale_v: Variant = xf.get("scale", null)
 			_expect(pos_v is Vector2 and is_finite((pos_v as Vector2).x) and is_finite((pos_v as Vector2).y),
 					"entity[%d].xform.pos is finite Vector2" % idx)
-			_expect((rot_v is float or rot_v is int) and is_finite(float(rot_v)),
-					"entity[%d].xform.rot is finite number" % idx)
+			_expect(rot_v is float and is_finite(rot_v as float),
+					"entity[%d].xform.rot is TYPE_FLOAT finite" % idx)
 			_expect(
 				scale_v is Vector2
 				and is_finite((scale_v as Vector2).x)
@@ -440,7 +630,12 @@ func _validate_world_invariants(world: Dictionary, report_data: Dictionary) -> v
 				if not (cdict_v is Dictionary):
 					continue
 				var cdict: Dictionary = cdict_v as Dictionary
-				var c_script: String = String(cdict.get("script", ""))
+				var c_script_v: Variant = cdict.get("script", null)
+				var c_script: String = c_script_v as String if c_script_v is String else ""
+				_expect(
+					c_script_v is String and c_script.begins_with("res://") and c_script.ends_with(".gd"),
+					"entity[%d].components[%d].script is res://...*.gd String" % [idx, c_idx]
+				)
 				var c_state_v: Variant = cdict.get("state", null)
 				var expected_keys: int = 2 + int(cdict.has("parked")) + int(cdict.has("manual"))
 				_expect(cdict.has("script") and cdict.has("state") and cdict.size() == expected_keys,
@@ -453,6 +648,8 @@ func _validate_world_invariants(world: Dictionary, report_data: Dictionary) -> v
 				_expect(c_state_v is Dictionary, "entity[%d].components[%d].state is Dictionary" % [idx, c_idx])
 				var cid: String = _probe_component_id(c_script)
 				if not cid.is_empty():
+					_expect(not comp_ids.has(cid),
+							"entity[%d].components[%d] unique component_id '%s'" % [idx, c_idx, cid])
 					comp_ids[cid] = true
 				if c_script == _COMP_SCENE_BOX_SCRIPT and c_state_v is Dictionary:
 					has_scene_box_comp = true
@@ -469,6 +666,8 @@ func _validate_world_invariants(world: Dictionary, report_data: Dictionary) -> v
 	var members_v: Variant = world.get("members", null)
 	_expect(members_v is Array, "world.members is Array")
 	if members_v is Array:
+		_expect((members_v as Array).size() == entities.size(),
+				"world.members.size() == entities.size()")
 		for m_idx: int in range((members_v as Array).size()):
 			var raw_m: Variant = (members_v as Array)[m_idx]
 			if not (raw_m is Dictionary):
@@ -486,18 +685,38 @@ func _validate_world_invariants(world: Dictionary, report_data: Dictionary) -> v
 	var scene_uids_map: Dictionary = {}
 	if world.has("modules"):
 		var mods_v: Variant = world.get("modules", null)
-		_expect(mods_v is Dictionary and int((mods_v as Dictionary).get("version", -1)) == 2
+		_expect(mods_v is Dictionary
+				and (mods_v as Dictionary).size() == 2
+				and typeof((mods_v as Dictionary).get("version", null)) == TYPE_INT
+				and int((mods_v as Dictionary).get("version", -1)) == 2
 				and (mods_v as Dictionary).get("entries", null) is Dictionary,
-				"world.modules has version == 2 and entries Dictionary")
+				"world.modules has exact keys [version, entries] with version == 2")
 		if mods_v is Dictionary and (mods_v as Dictionary).get("entries", null) is Dictionary:
 			_expect(var_to_bytes(mods_v).size() <= 24 * 1024 * 1024,
 					"world.modules var_to_bytes <= 24 MiB")
 			var entries_dict: Dictionary = (mods_v as Dictionary)["entries"] as Dictionary
+			_expect(entries_dict.size() <= 128,
+					"world.modules.entries.size() <= 128")
+			var mod_id_re := RegEx.new()
+			mod_id_re.compile("^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$")
 			for mid: Variant in entries_dict.keys():
+				var mid_str: String = String(mid) if (mid is String or mid is StringName) else ""
+				_expect((mid is String or mid is StringName) and mid_str.length() > 0 and mid_str.length() <= 128
+						and mod_id_re.search(mid_str) != null,
+						"world.modules.entries key '%s' is valid module_id" % str(mid))
 				var entry_v: Variant = entries_dict[mid]
-				if entry_v is Dictionary and (entry_v as Dictionary).get("state", null) is Dictionary:
-					_expect(var_to_bytes((entry_v as Dictionary)["state"]).size() <= 16 * 1024 * 1024,
-							"world.modules.entries.%s var_to_bytes <= 16 MiB" % str(mid))
+				_expect(entry_v is Dictionary, "world.modules.entries.%s is Dictionary" % mid_str)
+				if entry_v is Dictionary:
+					var ed: Dictionary = entry_v as Dictionary
+					_expect(ed.size() == 2 and ed.has("version") and ed.has("state"),
+							"world.modules.entries.%s has exact keys [version, state]" % mid_str)
+					_expect(typeof(ed.get("version", null)) == TYPE_INT and int(ed.get("version", 0)) >= 1,
+							"world.modules.entries.%s.version is int >= 1" % mid_str)
+					_expect(ed.get("state", null) is Dictionary,
+							"world.modules.entries.%s.state is Dictionary" % mid_str)
+					if ed.get("state", null) is Dictionary:
+						_expect(var_to_bytes(ed["state"]).size() <= 16 * 1024 * 1024,
+								"world.modules.entries.%s var_to_bytes <= 16 MiB" % mid_str)
 			if entries_dict.has("scene_box"):
 				scene_uids_map = _validate_scene_box_module(entries_dict["scene_box"], catalog, floor_uids)
 
@@ -804,6 +1023,7 @@ class HostVerifyResult:
     warnings: list[str] = field(default_factory=list)
     entity_count: int = 0
     serialized_bytes: int = 0
+    sdk_probe: dict[str, Any] = field(default_factory=dict)
 
 
 def analyze_godot_logs(*log_texts: str) -> list[str]:
@@ -1021,6 +1241,11 @@ def verify_mod_with_host(
         warnings=[str(w) for w in report_payload.get("warnings", [])],
         entity_count=int(report_payload.get("entity_count", 0)),
         serialized_bytes=int(report_payload.get("serialized_bytes", 0)),
+        sdk_probe=(
+            dict(report_payload["sdk_probe"])
+            if isinstance(report_payload.get("sdk_probe"), dict)
+            else {}
+        ),
     )
 
 

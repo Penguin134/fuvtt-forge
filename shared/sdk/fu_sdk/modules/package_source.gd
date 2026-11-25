@@ -288,6 +288,8 @@ func _parse_and_validate_manifest(
 		return {"ok": false, "reason": "manifest_invalid_json:" + manifest_filename}
 	var doc: Dictionary = j.data as Dictionary
 	for req_var: Variant in required_keys:
+		if not (req_var is String or req_var is StringName):
+			continue
 		var req_key: String = str(req_var).strip_edges()
 		if req_key.is_empty():
 			continue
@@ -296,8 +298,12 @@ func _parse_and_validate_manifest(
 		var v: Variant = doc[req_key]
 		if v == null:
 			return {"ok": false, "reason": "manifest_null_key:" + req_key}
-		if v is String and (v as String).strip_edges().is_empty():
-			return {"ok": false, "reason": "manifest_empty_key:" + req_key}
+		if v is String:
+			var cleaned_v: String = v as String
+			while cleaned_v.begins_with(char(0xfeff)):
+				cleaned_v = cleaned_v.substr(1)
+			if cleaned_v.strip_edges().is_empty():
+				return {"ok": false, "reason": "manifest_empty_key:" + req_key}
 	return {"ok": true, "doc": doc}
 
 
@@ -1469,6 +1475,8 @@ func normalize_rel_path(raw_ref: String, strip_prefixes: Array = []) -> Dictiona
 	var candidates: Array[String] = []
 	var norm_low: String = norm.to_lower()
 	for pfx_v: Variant in strip_prefixes:
+		if not (pfx_v is String or pfx_v is StringName):
+			continue
 		var pfx_norm: String = _normalize_clean_rel(str(pfx_v))
 		if pfx_norm.is_empty():
 			continue

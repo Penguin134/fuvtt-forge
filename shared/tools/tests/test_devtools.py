@@ -14,6 +14,7 @@ import subprocess
 import sys
 import time
 import unittest
+from unittest import mock
 import uuid
 import zipfile
 
@@ -27,6 +28,7 @@ if str(TOOLS_DIR) not in sys.path:
 import fuvtt_cli  # noqa: E402
 from fuvtt_devtools.client_inspector import (  # noqa: E402
     CONTRACT_WATCH_FILES,
+    GIT_PRACTICE_WATCH_FILES,
     STEAM_EXTERNAL_PRACTICE_DLL_REL,
     STEAM_EXTERNAL_STORAGE_JSON_REL,
     build_synthetic_embedded_pck_exe,
@@ -37,8 +39,11 @@ from fuvtt_devtools.client_inspector import (  # noqa: E402
 from fuvtt_devtools.deployer import (  # noqa: E402
     DeployError,
     build_reconciled_settings,
+    compute_directory_file_hashes,
+    compute_zip_file_hashes,
     discover_built_packages,
     format_serve_banner,
+    merge_registry_plugin_entry,
     resolve_hosted_zip,
     safe_extract_zip,
     sync_mod,
@@ -49,6 +54,7 @@ from fuvtt_devtools.env_config import (  # noqa: E402
     DEFAULT_WORKSPACE_ROOT,
     WorkspaceConfig,
     load_config,
+    parse_dotenv_file,
     redact_path,
 )
 from fuvtt_devtools.host_verifier import (  # noqa: E402
@@ -61,6 +67,7 @@ from fuvtt_devtools.scaffold import ScaffoldError, scaffold_mod  # noqa: E402
 from fuvtt_devtools.validator import (  # noqa: E402
     MAX_MANIFEST_BYTES,
     UTF8_BOM,
+    strip_gdscript_comments,
     validate_mod_dir,
     validate_mods,
     validate_zip_archive,
@@ -286,6 +293,47 @@ class EnvConfigTests(BaseDevtoolsTestCase):
             mac_sp,
             (fake_home / "Library" / "Application Support" / "FuVTT" / "session_plugins").resolve(),
         )
+
+    def test_r4_agents_and_env_example_placeholder_hygiene(self) -> None:
+        local_path_re = re.compile(
+            r"(?:[A-Za-z]:[/\\](?:Users|Program Files|Steam|DND|Projects|Work|home)[/\\]|/Users/[A-Za-z0-9._-]+/|/home/[A-Za-z0-9._-]+/)"
+        )
+        root_agents = (WORKSPACE_ROOT / "AGENTS.md").read_text(encoding="utf-8")
+        self.assertIn("<FUS_REPO_DIR>", root_agents)
+        self.assertNotRegex(root_agents, local_path_re)
+
+        for mod_agents in sorted((WORKSPACE_ROOT / "mods").glob("*/AGENTS.md")):
+            self.assertNotRegex(
+                mod_agents.read_text(encoding="utf-8"),
+                local_path_re,
+                msg=f"Hardcoded local path found in {mod_agents}",
+            )
+
+        env_example_path = WORKSPACE_ROOT / ".env.example"
+        self.assertTrue(env_example_path.is_file())
+        env_example = env_example_path.read_text(encoding="utf-8")
+        self.assertNotRegex(env_example, local_path_re)
+        self.assertRegex(env_example, r"(?m)^FUVTT_INSTALL_DIR=\s*$")
+        self.assertRegex(env_example, r"(?m)^FUS_REPO_DIR=\s*$")
+        self.assertRegex(env_example, r"(?m)^GODOT_BIN=\s*$")
+
+    def test_windows_backslash_fus_repo_dir_parsing_and_redaction(self) -> None:
+        win_repo_val = str(self.fake_fus_repo.resolve()).replace("/", "\\")
+        win_env = self.ws_root / ".env.win_test"
+        win_env.write_bytes(
+            (
+                f"FUS_REPO_DIR={win_repo_val}\n"
+                "FUS_SOURCE_REF=origin/codex/playtest-v060-20261122\n"
+                "BUILD_DIR=build\n"
+                "CACHE_DIR=.cache\n"
+            ).encode("utf-8")
+        )
+        cfg = load_config(self.ws_root, env_file=win_env, environ={})
+        self.assertEqual(cfg.fus_repo_dir, self.fake_fus_repo.resolve())
+        self.assertEqual(cfg.resolve_fus_repo_dir(), self.fake_fus_repo.resolve())
+        redacted = cfg.redact_path(f"repo={win_repo_val}\\project.godot")
+        self.assertIn("<FUS_REPO_DIR>", redacted)
+        self.assertNotIn("FakeFusRepo", redacted)
 
 
 class ScaffoldTests(BaseDevtoolsTestCase):
@@ -568,6 +616,47 @@ class PackagerTests(BaseDevtoolsTestCase):
         errs = validate_zip_archive(one_entry_zip)
         self.assertTrue(any("plugin_file_limit" in e for e in errs))
 
+    def test_workspace_mods_build_embeds_all_35_modular_sdk_scripts(self) -> None:
+        real_sdk_dir = WORKSPACE_ROOT / "shared" / "sdk" / "fu_sdk"
+        expected_sdk_rels = sorted(
+            p.relative_to(real_sdk_dir).as_posix() for p in real_sdk_dir.rglob("*.gd")
+        )
+        self.assertEqual(len(expected_sdk_rels), 35)
+
+        iso_cfg = WorkspaceConfig(
+            workspace_root=WORKSPACE_ROOT.resolve(),
+            mods_dir=WORKSPACE_ROOT / "mods",
+            sdk_dir=real_sdk_dir,
+            build_dir=(self.case_dir / "iso_pkg_build").resolve(),
+            cache_dir=(self.case_dir / "iso_pkg_cache").resolve(),
+            fuvtt_install_dir=self.cfg.fuvtt_install_dir,
+            fus_repo_dir=self.cfg.fus_repo_dir,
+            fus_source_ref=self.cfg.fus_source_ref,
+            godot_bin=self.cfg.godot_bin,
+        )
+
+        for mod_name in ("_template", "sdk-log-console", "fvtt-world-importer"):
+            art = build_mod(mod_name, config=iso_cfg)
+            self.assertTrue(art.sdk_bundled, msg=f"{mod_name} expected sdk_bundled=True")
+            self.assertGreaterEqual(len(art.files), 37)
+            self.assertLessEqual(len(art.files), 1000)
+
+            bm = json.loads(art.manifest_path.read_text(encoding="utf-8"))
+            file_hashes = bm["file_hashes"]
+            with zipfile.ZipFile(art.zip_path, "r") as zf:
+                names = set(zf.namelist())
+                for rel in expected_sdk_rels:
+                    arc_name = f"lib/fu_sdk/{rel}"
+                    self.assertIn(arc_name, names, msg=f"{mod_name} missing {arc_name}")
+                    payload = zf.read(arc_name)
+                    self.assertFalse(payload.startswith(UTF8_BOM), msg=f"{mod_name} BOM in {arc_name}")
+                    self.assertNotIn(b"\r", payload, msg=f"{mod_name} CR in {arc_name}")
+                    self.assertEqual(
+                        file_hashes.get(arc_name),
+                        hashlib.sha256(payload).hexdigest(),
+                        msg=f"{mod_name} hash mismatch for {arc_name}",
+                    )
+
 
 class DeployerTests(BaseDevtoolsTestCase):
     def test_sync_writes_full_practice_registry_fields_and_reconciles_settings(self) -> None:
@@ -722,6 +811,76 @@ class DeployerTests(BaseDevtoolsTestCase):
         banner = format_serve_banner(pkgs, "127.0.0.1", 8765)
         self.assertIn("http://127.0.0.1:8765/my-cool-mod.zip", banner)
         self.assertIn("http://127.0.0.1:8765/my_cool_mod.zip", banner)
+
+    def _build_sample_extract_zip(self, mod_name: str = "extract-mod") -> Path:
+        scaffold_mod(mod_name, config=self.cfg, import_extensions=["json"])
+        art = build_mod(mod_name, config=self.cfg)
+        return art.zip_path
+
+    def test_safe_extract_zip_permission_error_fallback_when_dest_missing(self) -> None:
+        zip_path = self._build_sample_extract_zip("extract-missing")
+        dest_dir = self.case_dir / "missing_dest"
+        self.assertFalse(dest_dir.exists())
+
+        with mock.patch(
+            "fuvtt_devtools.deployer.os.replace",
+            side_effect=PermissionError(13, "Access is denied"),
+        ) as mock_replace:
+            safe_extract_zip(zip_path, dest_dir)
+
+        self.assertEqual(mock_replace.call_count, 4)
+        self.assertTrue(dest_dir.is_dir())
+        self.assertEqual(compute_directory_file_hashes(dest_dir), compute_zip_file_hashes(zip_path))
+        leftover_tmps = list(dest_dir.parent.glob(f".{dest_dir.name}.tmp.*"))
+        self.assertEqual(leftover_tmps, [])
+
+    def test_safe_extract_zip_transient_permission_error_retry_succeeds(self) -> None:
+        zip_path = self._build_sample_extract_zip("extract-retry")
+        dest_dir = self.case_dir / "retry_dest"
+        self.assertFalse(dest_dir.exists())
+
+        real_replace = os.replace
+        calls = 0
+
+        def flaky_replace(src: Path | str, dst: Path | str) -> None:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise PermissionError(13, "Transient directory lock")
+            real_replace(src, dst)
+
+        with (
+            mock.patch("fuvtt_devtools.deployer.os.replace", side_effect=flaky_replace) as mock_replace,
+            mock.patch("fuvtt_devtools.deployer.shutil.copyfile", wraps=shutil.copyfile) as mock_copyfile,
+        ):
+            safe_extract_zip(zip_path, dest_dir)
+
+        self.assertEqual(mock_replace.call_count, 2)
+        mock_copyfile.assert_not_called()
+        self.assertTrue(dest_dir.is_dir())
+        self.assertEqual(compute_directory_file_hashes(dest_dir), compute_zip_file_hashes(zip_path))
+        leftover_tmps = list(dest_dir.parent.glob(f".{dest_dir.name}.tmp.*"))
+        self.assertEqual(leftover_tmps, [])
+
+    def test_safe_extract_zip_permission_error_fallback_when_dest_exists(self) -> None:
+        zip_path = self._build_sample_extract_zip("extract-exists")
+        dest_dir = self.case_dir / "existing_dest"
+        (dest_dir / "lib").mkdir(parents=True, exist_ok=True)
+        (dest_dir / "stale.txt").write_bytes(b"stale-content")
+        (dest_dir / "lib" / "old.gd").write_bytes(b"extends RefCounted\n")
+
+        with mock.patch(
+            "fuvtt_devtools.deployer.os.replace",
+            side_effect=PermissionError(13, "Access is denied"),
+        ) as mock_replace:
+            safe_extract_zip(zip_path, dest_dir)
+
+        self.assertEqual(mock_replace.call_count, 4)
+        self.assertFalse((dest_dir / "stale.txt").exists())
+        self.assertFalse((dest_dir / "lib" / "old.gd").exists())
+        self.assertEqual(compute_directory_file_hashes(dest_dir), compute_zip_file_hashes(zip_path))
+        leftover_tmps = list(dest_dir.parent.glob(f".{dest_dir.name}.tmp.*"))
+        self.assertEqual(leftover_tmps, [])
 
 
 class ClientInspectorTests(BaseDevtoolsTestCase):
@@ -885,6 +1044,61 @@ class ClientInspectorTests(BaseDevtoolsTestCase):
                 msg=f"Expected contract file {rel_path} to exist in build/extracted_pck",
             )
 
+    def test_watchlists_parity_and_no_duplicates(self) -> None:
+        self.assertEqual(len(CONTRACT_WATCH_FILES), len(set(CONTRACT_WATCH_FILES)))
+        self.assertEqual(len(GIT_PRACTICE_WATCH_FILES), len(set(GIT_PRACTICE_WATCH_FILES)))
+        self.assertGreaterEqual(len(CONTRACT_WATCH_FILES), 45)
+        self.assertGreaterEqual(len(GIT_PRACTICE_WATCH_FILES), 46)
+
+        expected_pairs = (
+            "scenes/extension/feature_manager",
+            "scenes/entities/entity_state_codec",
+            "scenes/entities/board_token",
+            "scenes/desktop/layout/desktop_panel_host",
+            "services/diagnostic_logger",
+            "modules/simple_fog/fog_config",
+            "modules/drawing/text_ink",
+            "modules/checklist/checklist",
+            "modules/backpack/comp_backpack",
+            "modules/campaign_time/feature",
+            "modules/dnd_opportunity/feature",
+            "scenes/candidates/entity_notes/comp_entity_note",
+        )
+        pck_set = set(CONTRACT_WATCH_FILES)
+        git_set = set(GIT_PRACTICE_WATCH_FILES)
+        for base in expected_pairs:
+            self.assertIn(f"{base}.gdc", pck_set)
+            self.assertIn(f"{base}.gd", git_set)
+
+    def test_git_drift_detected_on_newly_added_watchlist_files(self) -> None:
+        repo = self._create_synthetic_git_repo(version="0.0.60")
+        for rel in ("scenes/extension/feature_manager.gd", "modules/drawing/text_ink.gd"):
+            target = repo / Path(*rel.split("/"))
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"extends RefCounted\n# v1\n")
+        subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "add contracts"], check=True)
+
+        git_cfg = load_config(
+            self.ws_root,
+            env_file=self.ws_root / "missing.env",
+            environ={"FUS_REPO_DIR": str(repo), "FUS_SOURCE_REF": "HEAD"},
+        )
+        res1 = inspect_client(git_cfg, source="git")
+        self.assertFalse(res1.diff.has_previous)
+        self.assertTrue(res1.snapshot["git_source"]["watch_files"]["modules/drawing/text_ink.gd"]["exists"])
+
+        (repo / "modules" / "drawing" / "text_ink.gd").write_bytes(b"extends RefCounted\n# v2\n")
+        subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "update text_ink"], check=True)
+
+        res2 = inspect_client(git_cfg, source="git")
+        self.assertFalse(res2.diff.is_clean)
+        self.assertEqual(
+            [c["path"] for c in res2.diff.changed_git_files],
+            ["modules/drawing/text_ink.gd"],
+        )
+
 
 class HostVerifierTests(BaseDevtoolsTestCase):
     def test_analyze_godot_logs_detects_script_errors_and_leaks(self) -> None:
@@ -949,6 +1163,13 @@ class HostVerifierTests(BaseDevtoolsTestCase):
                         "warnings": [],
                         "entity_count": 2,
                         "serialized_bytes": 512,
+                        "sdk_probe": {
+                            "sdk_bundled": True,
+                            "sdk_version": "1.3.0",
+                            "log_bus_ok": True,
+                            "module_registry_ok": True,
+                            "plugin_sdks_resolved": 23,
+                        },
                     }
                 ),
                 encoding="utf-8",
@@ -960,6 +1181,29 @@ class HostVerifierTests(BaseDevtoolsTestCase):
         self.assertEqual(pass_res.passed_checks, 24)
         self.assertEqual(pass_res.entity_count, 2)
         self.assertEqual(pass_res.serialized_bytes, 512)
+        self.assertTrue(pass_res.sdk_probe.get("sdk_bundled"))
+        self.assertTrue(pass_res.sdk_probe.get("log_bus_ok"))
+        self.assertTrue(pass_res.sdk_probe.get("module_registry_ok"))
+        self.assertEqual(pass_res.sdk_probe.get("plugin_sdks_resolved"), 23)
+
+        # Simulated FAIL runner when host.warnings cap is exceeded
+        def _warn_cap_fail_runner(cmd, *, cwd, env, timeout_seconds):
+            report_arg = [a for a in cmd if a.startswith("--report=")][0].split("=", 1)[1]
+            Path(report_arg).write_text(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "passed_checks": 18,
+                        "failures": ["host.warnings count <= 100 (actual=101)"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return 1, "FUVTT_VERIFY_HOST FAIL checks=18 failures=1\n", "", False
+
+        cap_res = verify_mod_with_host("probe-demo", config=verify_cfg, runner=_warn_cap_fail_runner)
+        self.assertFalse(cap_res.ok)
+        self.assertIn("host.warnings count <= 100 (actual=101)", cap_res.failures)
 
         # Simulated FAIL runner with SCRIPT ERROR in stderr even if report says ok
         def _dirty_log_runner(cmd, *, cwd, env, timeout_seconds):
@@ -1005,7 +1249,56 @@ class HostVerifierTests(BaseDevtoolsTestCase):
             res.ok,
             msg=f"Real Godot verify-host failed: failures={res.failures}, log_errors={res.log_errors}",
         )
-        self.assertGreaterEqual(len(res.loaded_scripts), 3)
+        self.assertGreaterEqual(len(res.loaded_scripts), 36)
+        self.assertGreater(res.serialized_bytes, 0)
+        self.assertTrue(res.sdk_probe.get("sdk_bundled"))
+        self.assertTrue(res.sdk_probe.get("log_bus_ok"))
+        self.assertTrue(res.sdk_probe.get("module_registry_ok"))
+        self.assertEqual(res.sdk_probe.get("plugin_sdks_resolved"), 23)
+
+        real_sdk_dir = WORKSPACE_ROOT / "shared" / "sdk" / "fu_sdk"
+        for sdk_file in real_sdk_dir.rglob("*.gd"):
+            rel = sdk_file.relative_to(real_sdk_dir).as_posix()
+            self.assertIn(f"res://pkg/lib/fu_sdk/{rel}", res.loaded_scripts)
+
+    def test_real_godot_verify_host_on_sdk_log_console_if_available(self) -> None:
+        real_cfg = load_config(WORKSPACE_ROOT)
+        if real_cfg.godot_bin is None or not real_cfg.godot_bin.is_file():
+            self.skipTest("GODOT_BIN not configured or unavailable in this environment")
+        try:
+            probe_ver = subprocess.run(
+                [str(real_cfg.godot_bin), "--headless", "--quit", "--version"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except OSError:
+            self.skipTest("GODOT_BIN cannot be executed inside current sandbox")
+        if probe_ver.returncode != 0:
+            self.skipTest(f"GODOT_BIN --version returned {probe_ver.returncode}")
+
+        iso_cfg = WorkspaceConfig(
+            workspace_root=WORKSPACE_ROOT.resolve(),
+            mods_dir=WORKSPACE_ROOT / "mods",
+            sdk_dir=WORKSPACE_ROOT / "shared" / "sdk" / "fu_sdk",
+            build_dir=(self.case_dir / "iso_console_build").resolve(),
+            cache_dir=(self.case_dir / "iso_console_cache").resolve(),
+            fuvtt_install_dir=real_cfg.fuvtt_install_dir,
+            fus_repo_dir=real_cfg.fus_repo_dir,
+            fus_source_ref=real_cfg.fus_source_ref,
+            godot_bin=real_cfg.godot_bin,
+        )
+        res = verify_mod_with_host("sdk-log-console", config=iso_cfg)
+        self.assertTrue(
+            res.ok,
+            msg=f"Real Godot verify-host failed on sdk-log-console: failures={res.failures}, log_errors={res.log_errors}",
+        )
+        self.assertEqual(res.plugin_id, "sdk_log_console")
+        self.assertGreaterEqual(len(res.loaded_scripts), 36)
+        self.assertEqual(res.sdk_probe.get("plugin_sdks_resolved"), 23)
+        self.assertTrue(res.sdk_probe.get("log_bus_ok"))
+        self.assertTrue(res.sdk_probe.get("module_registry_ok"))
         self.assertGreater(res.serialized_bytes, 0)
 
     def test_real_godot_verify_host_exercises_upgraded_fu_sdk_v1_1_features(self) -> None:
@@ -1131,6 +1424,297 @@ class CliEntrypointTests(BaseDevtoolsTestCase):
         self.assertIn("<FUVTT_INSTALL_DIR>", out)
         self.assertNotIn("FakeSteam", out)
         self.assertIn("file_hashes=", out)
+
+
+class Tier5DevtoolsAdversarialTests(BaseDevtoolsTestCase):
+    def test_validator_rejects_ntfs_case_mismatch_double_slash_newline_and_multiline_fakes(self) -> None:
+        res = scaffold_mod("adv-val", config=self.cfg, import_extensions=["json"])
+        m_dir = res.target_dir
+        manifest_path = m_dir / "plugin.json"
+        base_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+        # (a) Windows NTFS case mismatch on entry (Entry.gd on disk vs "entry.gd" in manifest)
+        entry_orig = m_dir / "entry.gd"
+        entry_tmp = m_dir / "_tmp_entry.gd"
+        entry_upper = m_dir / "Entry.gd"
+        entry_orig.rename(entry_tmp)
+        entry_tmp.rename(entry_upper)
+        rep_case = validate_mod_dir(m_dir, mod_name="adv-val", sdk_dir=self.cfg.sdk_dir)
+        self.assertFalse(rep_case.ok)
+        self.assertTrue(any("plugin_entry_missing" in e for e in rep_case.errors))
+        entry_upper.rename(entry_tmp)
+        entry_tmp.rename(entry_orig)
+
+        # (b) Double-slash entry path "src//entry.gd"
+        (m_dir / "src").mkdir(exist_ok=True)
+        (m_dir / "src" / "entry.gd").write_bytes(entry_orig.read_bytes())
+        bad_double = dict(base_manifest, entry="src//entry.gd")
+        manifest_path.write_text(json.dumps(bad_double, indent=2), encoding="utf-8")
+        rep_dbl = validate_mod_dir(m_dir, mod_name="adv-val", sdk_dir=self.cfg.sdk_dir)
+        self.assertFalse(rep_dbl.ok)
+
+        # (c) Trailing newline in regex-checked manifest fields (\Z vs $)
+        for key, bad_val in (
+            ("id", "adv_val\n"),
+            ("version", "0.1.0\n"),
+            ("import_extensions", ["json\n"]),
+            ("entry", "entry.gd\n"),
+        ):
+            m_nl = dict(base_manifest)
+            m_nl[key] = bad_val
+            manifest_path.write_text(json.dumps(m_nl, indent=2), encoding="utf-8")
+            rep_nl = validate_mod_dir(m_dir, mod_name="adv-val", sdk_dir=self.cfg.sdk_dir)
+            self.assertFalse(rep_nl.ok, f"Expected trailing newline failure for {key}={bad_val!r}")
+
+        # (d) description: null allowed per PluginPackageJob.cs:114
+        m_null_desc = dict(base_manifest, description=None)
+        manifest_path.write_text(json.dumps(m_null_desc, indent=2), encoding="utf-8")
+        rep_null_desc = validate_mod_dir(m_dir, mod_name="adv-val", sdk_dir=self.cfg.sdk_dir)
+        self.assertTrue(rep_null_desc.ok, f"Expected description=None ok: {rep_null_desc.errors}")
+
+        # (e) Multiline string cannot fake extends RefCounted / hooks
+        manifest_path.write_text(json.dumps(base_manifest, indent=2), encoding="utf-8")
+        fake_gd = (
+            "extends Node\n"
+            'const FAKE = """\n'
+            "extends RefCounted\n"
+            "func inspect_import(p, o, h):\n"
+            "func prepare_import(p, o, h):\n"
+            '"""\n'
+        )
+        stripped = strip_gdscript_comments(fake_gd)
+        self.assertNotIn("extends RefCounted", stripped)
+        entry_orig.write_text(fake_gd, encoding="utf-8")
+        rep_fake = validate_mod_dir(m_dir, mod_name="adv-val", sdk_dir=self.cfg.sdk_dir)
+        self.assertFalse(rep_fake.ok)
+
+        # (f) validate_zip_archive inspects plugin.json inside ZIP + exact case & syntax of entry
+        bad_zip = self.case_dir / "bad_zip_manifest.zip"
+        with zipfile.ZipFile(bad_zip, mode="w") as zf:
+            zf.writestr("plugin.json", json.dumps(dict(base_manifest, schema="wrong", entry="Missing.gd")))
+            zf.writestr("missing.gd", "extends RefCounted\nfunc inspect_import(p,o,h):\n\treturn {}\nfunc prepare_import(p,o,h):\n\treturn {}\n")
+        z_errs = validate_zip_archive(bad_zip)
+        self.assertTrue(any("plugin_host_api_incompatible" in e for e in z_errs))
+        self.assertTrue(any("plugin_entry_missing" in e for e in z_errs))
+
+        valid_entry_src = (
+            "extends RefCounted\n"
+            "func inspect_import(p, o, h):\n\treturn {}\n"
+            "func prepare_import(p, o, h):\n\treturn {}\n"
+        )
+        for idx, bad_entry_manifest in enumerate(
+            [
+                {k: v for k, v in base_manifest.items() if k != "entry"},
+                dict(base_manifest, entry=""),
+                dict(base_manifest, entry="src//entry.gd"),
+                dict(base_manifest, entry="../evil.gd"),
+            ]
+        ):
+            bad_entry_zip = self.case_dir / f"bad_zip_entry_{idx}.zip"
+            with zipfile.ZipFile(bad_entry_zip, mode="w") as zf:
+                zf.writestr("plugin.json", json.dumps(bad_entry_manifest))
+                zf.writestr("entry.gd", valid_entry_src)
+            ze = validate_zip_archive(bad_entry_zip)
+            self.assertTrue(
+                any("invalid_plugin_entry" in e for e in ze),
+                msg=f"Expected invalid_plugin_entry for {bad_entry_manifest.get('entry', '<missing>')!r}, got {ze}",
+            )
+
+        # (g) strip_gdscript_comments handles Godot 4 raw strings r"..." / r'...' / r"""..."""
+        # Godot 4 raw strings honor `\` delimiter escapes (e.g., r"foo\\", r"foo\"", r"""multi\\""").
+        raw_str_gd = (
+            'const RAW_WIN := r"foo\\\\"\n'
+            'const RAW_DQ := r"foo\\""\n'
+            "const RAW_SQ := r'bar\\\\'\n"
+            "const RAW_SQ_ESC := r'bar\\''\n"
+            'const RAW_TRICK := r"\\"" + " class_name FakeClass"\n'
+            'const RAW_MULTI := r"""multi\\\\"""\n'
+            "extends RefCounted\n"
+            "class_name RealCheck\n"
+            "func inspect_import(p, o, h):\n\treturn {}\n"
+            "func prepare_import(p, o, h):\n\treturn {}\n"
+        )
+        stripped_raw = strip_gdscript_comments(raw_str_gd)
+        self.assertIn("extends RefCounted", stripped_raw)
+        self.assertIn("class_name RealCheck", stripped_raw)
+        self.assertNotIn("FakeClass", stripped_raw)
+        self.assertNotIn("class_name FakeClass", stripped_raw)
+
+        # (h) Raw-string backslash-quote bypass payloads must stay blanked and fail validation
+        raw_single_trick = 'extends RefCounted\nconst S := r"\\"" + " class_name FakeClass"\n'
+        stripped_single_trick = strip_gdscript_comments(raw_single_trick)
+        self.assertIn("extends RefCounted", stripped_single_trick)
+        self.assertNotIn("FakeClass", stripped_single_trick)
+        self.assertNotIn("class_name", stripped_single_trick)
+
+        raw_multiline_bypass = (
+            "extends Node\n"
+            'const S := r"""hello \\"""\n'
+            "extends RefCounted\n"
+            "func inspect_import(p, o, h): return {}\n"
+            "func prepare_import(p, o, h): return {}\n"
+            '"""\n'
+        )
+        stripped_bypass = strip_gdscript_comments(raw_multiline_bypass)
+        self.assertNotIn("extends RefCounted", stripped_bypass)
+        self.assertNotIn("inspect_import", stripped_bypass)
+        self.assertNotIn("prepare_import", stripped_bypass)
+        entry_orig.write_text(raw_multiline_bypass, encoding="utf-8")
+        rep_raw_bypass = validate_mod_dir(m_dir, mod_name="adv-val", sdk_dir=self.cfg.sdk_dir)
+        self.assertFalse(rep_raw_bypass.ok)
+
+    def test_deployer_stale_zip_on_delete_safe_extract_limits_registry_and_dotenv(self) -> None:
+        # (a) Deleted source file invalidates cached artifact
+        res = scaffold_mod("stale-del-mod", config=self.cfg, import_extensions=["json"])
+        helper = res.target_dir / "src" / "helper.gd"
+        helper.parent.mkdir(parents=True, exist_ok=True)
+        helper.write_text("extends RefCounted\n", encoding="utf-8")
+        sync1 = sync_mod("stale-del-mod", config=self.cfg)
+        self.assertTrue(sync1.rebuilt)
+        helper.unlink()
+        sync2 = sync_mod("stale-del-mod", config=self.cfg, allow_same_version=True)
+        self.assertTrue(sync2.rebuilt)
+        self.assertFalse((sync2.package_dir / "src" / "helper.gd").exists())
+        built_zip = self.cfg.build_dir / "stale-del-mod" / "stale-del-mod.zip"
+        with zipfile.ZipFile(built_zip, "r") as zf:
+            self.assertNotIn("src/helper.gd", zf.namelist())
+
+        # (b) safe_extract_zip enforces 2..1000 entry count and 256 MiB expanded limit
+        one_zip = self.case_dir / "one_entry_deploy.zip"
+        with zipfile.ZipFile(one_zip, mode="w") as zf:
+            zf.writestr("plugin.json", "{}")
+        with self.assertRaises(DeployError):
+            safe_extract_zip(one_zip, self.case_dir / "extract_one")
+
+        bomb_zip = self.case_dir / "bomb_275m.zip"
+        chunk = b"\x00" * (1024 * 1024)
+        with zipfile.ZipFile(bomb_zip, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("plugin.json", "{}")
+            for i in range(11):
+                zf.writestr(f"blob_{i}.bin", chunk * 25)
+        with self.assertRaises(DeployError):
+            safe_extract_zip(bomb_zip, self.case_dir / "extract_bomb")
+
+        # (c) merge_registry_plugin_entry rejects version != 1
+        with self.assertRaises(DeployError):
+            merge_registry_plugin_entry(
+                {"version": 2, "plugins": {}},
+                plugin_id="bad_reg",
+                plugin_manifest={"id": "bad_reg", "version": "0.1.0", "name": "Bad", "settings": []},
+                sha256="a" * 64,
+                file_hashes={},
+            )
+
+        # (d) parse_dotenv_file raises ConfigError on non-UTF-8 bytes and BOM-less UTF-16LE (NUL bytes)
+        bad_env = self.case_dir / "bad_gbk.env"
+        bad_env.write_bytes("KEY=\xc4\xe3\xba\xc3\n".encode("latin-1"))
+        with self.assertRaises(ConfigError):
+            parse_dotenv_file(bad_env)
+
+        utf16_env = self.case_dir / "bad_utf16le.env"
+        utf16_env.write_bytes("FOO=bar\n".encode("utf-16-le"))
+        with self.assertRaises(ConfigError):
+            parse_dotenv_file(utf16_env)
+
+    def test_host_verifier_rejects_incomplete_inspect_and_invalid_world_invariants(self) -> None:
+        real_cfg = load_config(WORKSPACE_ROOT)
+        if real_cfg.godot_bin is None or not real_cfg.godot_bin.is_file():
+            self.skipTest("GODOT_BIN not configured in .env.local")
+
+        iso_mods = self.case_dir / "rogue_mods"
+        rogue_dir = iso_mods / "rogue-mod"
+        shutil.copytree(WORKSPACE_ROOT / "mods" / "_template", rogue_dir)
+        pj = json.loads((rogue_dir / "plugin.json").read_text(encoding="utf-8"))
+        pj["id"] = "rogue_mod"
+        pj["name"] = "Rogue Mod"
+        (rogue_dir / "plugin.json").write_text(json.dumps(pj, indent=2), encoding="utf-8")
+
+        rogue_entry = """extends RefCounted
+
+func inspect_import(path: String, _options: Dictionary, _host: RefCounted) -> Dictionary:
+\treturn {
+\t\t"ok": true,
+\t\t"sha256": FileAccess.get_sha256(path),
+\t\t"counts": {"unsupported": 0},
+\t}
+
+func prepare_import(_path: String, _options: Dictionary, _host: RefCounted) -> Dictionary:
+\tvar fuid := "11111111111111111111111111111111"
+\tvar luid := "22222222222222222222222222222222"
+\tvar mods := {}
+\tfor i: int in range(130):
+\t\tmods["m_%d" % i] = {"version": 1, "state": {}}
+\tmods["Invalid-Module-ID!"] = {"version": 0, "state": {}}
+\treturn {
+\t\t"ok": true,
+\t\t"counts": {"records": 1, "unsupported": 0},
+\t\t"world": {
+\t\t\t"format": "fus.practice.world",
+\t\t\t"version": 3,
+\t\t\t"catalog": {
+\t\t\t\t"active_floor_uid": fuid,
+\t\t\t\t"floors": [{"id": 0, "floor_uid": fuid, "name": "1F", "color": Color.WHITE}],
+\t\t\t\t"layers": {
+\t\t\t\t\t"schema": "fus.floor_layers.v2",
+\t\t\t\t\t"floors": [{"floor_uid": fuid, "default_layer_uid": luid, "layers": [{"layer_uid": luid, "name": "Entity", "kind": "entity", "locked": false}]}],
+\t\t\t\t},
+\t\t\t},
+\t\t\t"entity_state": {
+\t\t\t\t"version": 3,
+\t\t\t\t"entities": [{
+\t\t\t\t\t"id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+\t\t\t\t\t"entity_type": "object",
+\t\t\t\t\t"entity_size": Vector2(1.0, 1.0),
+\t\t\t\t\t"selectable_in_select_mode": "yes",
+\t\t\t\t\t"footprint_radius": 32,
+\t\t\t\t\t"fallback_color": "white",
+\t\t\t\t\t"properties": {"z_index": 5},
+\t\t\t\t\t"xform": {"pos": Vector2.ZERO, "rot": 0, "scale": Vector2.ONE, "extra": 1},
+\t\t\t\t\t"components": [
+\t\t\t\t\t\t{"script": "res://scenes/entities/components/comp_visual.gd", "state": {"visible": true, "modulate": Color.WHITE, "sprite_path": "", "fallback_color": Color.WHITE}},
+\t\t\t\t\t\t{"script": "res://scenes/entities/components/comp_permission.gd", "state": {"owner_peer_id": ""}},
+\t\t\t\t\t\t{"script": "res://modules/portal/comp_portal.gd", "state": {"pair_key": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}},
+\t\t\t\t\t\t{"script": "res://modules/portal/comp_portal.gd", "state": {"pair_key": "cccccccccccccccccccccccccccccccc"}},
+\t\t\t\t\t\t{"script": "bad_not_res_not_gd", "state": {}},
+\t\t\t\t\t],
+\t\t\t\t}],
+\t\t\t},
+\t\t\t"members": [],
+\t\t\t"modules": {"version": 2, "entries": mods, "unexpected_key": 1},
+\t\t},
+\t}
+"""
+        (rogue_dir / "entry.gd").write_bytes(rogue_entry.encode("utf-8"))
+        iso_cfg = WorkspaceConfig(
+            workspace_root=WORKSPACE_ROOT.resolve(),
+            mods_dir=iso_mods,
+            sdk_dir=WORKSPACE_ROOT / "shared" / "sdk" / "fu_sdk",
+            build_dir=(self.case_dir / "rogue_build").resolve(),
+            cache_dir=(self.case_dir / "rogue_cache").resolve(),
+            fuvtt_install_dir=real_cfg.fuvtt_install_dir,
+            fus_repo_dir=real_cfg.fus_repo_dir,
+            fus_source_ref=real_cfg.fus_source_ref,
+            godot_bin=real_cfg.godot_bin,
+        )
+        res = verify_mod_with_host("rogue-mod", config=iso_cfg)
+        self.assertFalse(res.ok)
+        joined_fail = "\n".join(res.failures)
+        self.assertIn("source_bytes", joined_fail)
+        self.assertIn("assets", joined_fail)
+        self.assertIn("entity[0].entity_size", joined_fail)
+        self.assertIn("entity[0].selectable_in_select_mode", joined_fail)
+        self.assertIn("entity[0].footprint_radius", joined_fail)
+        self.assertIn("entity[0].fallback_color", joined_fail)
+        self.assertIn("xform has exact keys", joined_fail)
+        self.assertIn("xform.rot", joined_fail)
+        self.assertIn("properties.z_index == 0", joined_fail)
+        self.assertIn("components[4].script is res://", joined_fail)
+        self.assertIn("world.members.size() == entities.size()", joined_fail)
+        self.assertIn("unique component_id", joined_fail)
+        self.assertIn("world.modules has exact keys", joined_fail)
+        self.assertIn("world.modules.entries.size() <= 128", joined_fail)
+        self.assertIn("valid module_id", joined_fail)
+        self.assertIn(".version is int >= 1", joined_fail)
 
 
 if __name__ == "__main__":

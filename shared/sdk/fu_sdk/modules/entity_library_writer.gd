@@ -97,17 +97,41 @@ func _validate_session_destination(global_root: String, global_dest: String) -> 
 	return grandparent_dir == root_norm
 
 
+func _strip_leading_bom(text: String) -> String:
+	var cleaned: String = text
+	while cleaned.begins_with(char(0xfeff)):
+		cleaned = cleaned.substr(1)
+	return cleaned
+
+
+func _safe_str(v: Variant, fallback: String = "") -> String:
+	if v is String or v is StringName:
+		return str(v)
+	return fallback
+
+
+func _safe_bytes(v: Variant) -> PackedByteArray:
+	if v is PackedByteArray:
+		return v as PackedByteArray
+	return PackedByteArray()
+
+
 func _sanitize_name(raw_name: String, fallback: String) -> String:
-	var cleaned: String = raw_name.replace("\r", " ").replace("\n", " ").replace("\t", " ")
+	var cleaned: String = _strip_leading_bom(raw_name).replace("\r", " ").replace("\n", " ").replace("\t", " ")
 	var out: String = ""
 	for i: int in range(cleaned.length()):
 		var cp: int = cleaned.unicode_at(i)
-		if cp >= 32 and cp != 127:
+		if cp >= 32 and not (cp >= 127 and cp <= 159):
 			out += cleaned[i]
-	out = out.strip_edges()
+	while true:
+		var next_out: String = _strip_leading_bom(out).strip_edges()
+		if next_out == out:
+			break
+		out = next_out
+	out = out.left(256).strip_edges()
 	if out.is_empty():
 		return fallback
-	return out.left(256)
+	return out
 
 
 func _to_float(v: Variant, fallback: float) -> float:
@@ -117,8 +141,13 @@ func _to_float(v: Variant, fallback: float) -> float:
 		TYPE_FLOAT:
 			var f: float = float(v)
 			return f if is_finite(f) else fallback
-		TYPE_STRING:
-			var s: String = str(v).strip_edges()
+		TYPE_STRING, TYPE_STRING_NAME:
+			var s: String = str(v)
+			while true:
+				var next_s: String = _strip_leading_bom(s).strip_edges()
+				if next_s == s:
+					break
+				s = next_s
 			if s.is_valid_float():
 				var fs: float = s.to_float()
 				if is_finite(fs):
@@ -134,11 +163,17 @@ func _to_bool(v: Variant, fallback: bool) -> bool:
 			return int(v) != 0
 		TYPE_FLOAT:
 			var f: float = float(v)
-			if is_nan(f):
+			if not is_finite(f):
 				return fallback
 			return f != 0.0
-		TYPE_STRING:
-			var s: String = str(v).strip_edges().to_lower()
+		TYPE_STRING, TYPE_STRING_NAME:
+			var cleaned: String = str(v)
+			while true:
+				var next_cleaned: String = _strip_leading_bom(cleaned).strip_edges()
+				if next_cleaned == cleaned:
+					break
+				cleaned = next_cleaned
+			var s: String = cleaned.to_lower()
 			match s:
 				"true", "1", "yes", "on":
 					return true
@@ -166,9 +201,13 @@ func _is_valid_asset_ref(ref_str: String) -> bool:
 	if dot != 64:
 		return false
 	var digest: String = rest.substr(0, 64)
-	if digest != digest.to_lower() or not digest.is_valid_hex_number(false):
+	if digest.length() != 64:
 		return false
-	var ext: String = rest.substr(65).to_lower()
+	for i: int in range(64):
+		var c: int = digest.unicode_at(i)
+		if not ((c >= 48 and c <= 57) or (c >= 97 and c <= 102)):
+			return false
+	var ext: String = rest.substr(65)
 	return ext in _ALLOWED_ASSET_EXTS
 
 
@@ -213,29 +252,29 @@ func _rollback_library_mutations(
 	if rev.is_empty() and store.has_method("ReadLibraryRecords"):
 		var r_var: Variant = store.ReadLibraryRecords(global_root)
 		if r_var is Dictionary and bool((r_var as Dictionary).get("ok", false)):
-			rev = str((r_var as Dictionary).get("revision", ""))
+			rev = _safe_str((r_var as Dictionary).get("revision", ""), "")
 	for idx: int in range(mutations.size() - 1, -1, -1):
 		var mut: Dictionary = mutations[idx]
-		var rec_id: String = str(mut.get("id", ""))
-		var written_b: PackedByteArray = mut.get("written_bytes", PackedByteArray())
-		var prev_b: PackedByteArray = mut.get("prev_bytes", PackedByteArray())
+		var rec_id: String = _safe_str(mut.get("id", ""), "")
+		var written_b: PackedByteArray = _safe_bytes(mut.get("written_bytes", null))
+		var prev_b: PackedByteArray = _safe_bytes(mut.get("prev_bytes", null))
 		var rb_res: Dictionary = _parse_json_dict(
 			store.WriteLibraryRecord(global_root, rec_id, written_b, prev_b, rev)
 		)
 		if bool(rb_res.get("ok", false)):
-			rev = str(rb_res.get("revision", rev))
+			rev = _safe_str(rb_res.get("revision", rev), rev)
 		elif store.has_method("ReadLibraryRecords"):
 			var r2_var: Variant = store.ReadLibraryRecords(global_root)
 			if r2_var is Dictionary and bool((r2_var as Dictionary).get("ok", false)):
 				var r2: Dictionary = r2_var as Dictionary
-				rev = str(r2.get("revision", rev))
+				rev = _safe_str(r2.get("revision", rev), rev)
 				var cur_recs: Dictionary = r2.get("records", {}) if r2.get("records", null) is Dictionary else {}
-				var cur_b: PackedByteArray = cur_recs.get(rec_id, PackedByteArray())
+				var cur_b: PackedByteArray = _safe_bytes(cur_recs.get(rec_id, null))
 				var rb2: Dictionary = _parse_json_dict(
 					store.WriteLibraryRecord(global_root, rec_id, cur_b, prev_b, rev)
 				)
 				if bool(rb2.get("ok", false)):
-					rev = str(rb2.get("revision", rev))
+					rev = _safe_str(rb2.get("revision", rev), rev)
 
 
 func rollback_last_registration() -> void:
@@ -244,9 +283,9 @@ func rollback_last_registration() -> void:
 	var store: Variant = _last_lib_rollback.get("store", null)
 	if store == null:
 		store = _resolve_shared_asset_store()
-	var gr: String = str(_last_lib_rollback.get("global_root", ""))
+	var gr: String = _safe_str(_last_lib_rollback.get("global_root", ""), "")
 	var muts_raw: Variant = _last_lib_rollback.get("mutations", [])
-	var rev: String = str(_last_lib_rollback.get("rev", ""))
+	var rev: String = _safe_str(_last_lib_rollback.get("rev", ""), "")
 	_last_lib_rollback = {}
 	if store == null or gr.is_empty() or not (muts_raw is Array):
 		return
@@ -417,7 +456,9 @@ func register_entries(
 
 	var open_res: Dictionary = _parse_json_dict(store.OpenLibrary(global_root))
 	if not bool(open_res.get("ok", false)):
-		var open_reason: String = str(open_res.get("reason", "open_library_failed"))
+		var open_reason: String = _safe_str(open_res.get("reason", "open_library_failed"), "open_library_failed")
+		if open_reason.is_empty():
+			open_reason = "open_library_failed"
 		_warn(session, "打开素材库失败，已跳过素材库注册：" + open_reason)
 		return {"ok": true, "count": 0, "skipped": true, "reason": open_reason}
 
@@ -427,12 +468,14 @@ func register_entries(
 		return {"ok": true, "count": 0, "skipped": true, "reason": "read_library_records_failed"}
 	var read_res: Dictionary = read_var as Dictionary
 	if not bool(read_res.get("ok", false)):
-		var read_reason: String = str(read_res.get("reason", "read_library_records_failed"))
+		var read_reason: String = _safe_str(read_res.get("reason", "read_library_records_failed"), "read_library_records_failed")
+		if read_reason.is_empty():
+			read_reason = "read_library_records_failed"
 		_warn(session, "读取素材库记录失败，已跳过素材库注册：" + read_reason)
 		return {"ok": true, "count": 0, "skipped": true, "reason": read_reason}
 
 	var records: Dictionary = read_res.get("records", {}) if read_res.get("records", null) is Dictionary else {}
-	var current_rev: String = str(read_res.get("revision", ""))
+	var current_rev: String = _safe_str(read_res.get("revision", ""), "")
 	var registered_count: int = 0
 	var mutations: Array[Dictionary] = []
 
@@ -446,7 +489,7 @@ func register_entries(
 			continue
 		var entry: Dictionary = raw_entry as Dictionary
 		var folder_raw: Variant = entry.get("folder_name", "")
-		var fname_path: String = str(folder_raw).strip_edges() if (folder_raw is String) else ""
+		var fname_path: String = _safe_str(folder_raw, "").strip_edges()
 		if fname_path.is_empty():
 			continue
 		var parts: PackedStringArray = fname_path.replace("\\", "/").split("/", false)
@@ -474,7 +517,7 @@ func register_entries(
 				"folder_id": parent_id,
 			}
 			var desired_f: PackedByteArray = var_to_bytes(folder_row)
-			var expected_f: PackedByteArray = records.get(fid, PackedByteArray())
+			var expected_f: PackedByteArray = _safe_bytes(records.get(fid, null))
 			var folder_ok: bool = false
 			if desired_f == expected_f:
 				folder_ok = true
@@ -483,7 +526,7 @@ func register_entries(
 					store.WriteLibraryRecord(global_root, fid, expected_f, desired_f, current_rev)
 				)
 				if bool(wf_res.get("ok", false)):
-					current_rev = str(wf_res.get("revision", current_rev))
+					current_rev = _safe_str(wf_res.get("revision", current_rev), current_rev)
 					mutations.append({
 						"id": fid,
 						"prev_bytes": expected_f,
@@ -492,7 +535,8 @@ func register_entries(
 					records[fid] = desired_f
 					folder_ok = true
 				else:
-					_warn(session, "写入素材库目录失败（%s）：%s" % [clean_seg, str(wf_res.get("reason", "unknown"))])
+					var wf_reason: String = _safe_str(wf_res.get("reason", "unknown"), "unknown")
+					_warn(session, "写入素材库目录失败（%s）：%s" % [clean_seg, wf_reason if not wf_reason.is_empty() else "unknown"])
 					if records.has(fid):
 						folder_ok = true
 			if folder_ok:
@@ -511,7 +555,7 @@ func register_entries(
 			continue
 		var entry: Dictionary = entries[i] as Dictionary
 		var raw_id: Variant = entry.get("id", "")
-		var base_key: String = str(raw_id).strip_edges() if (raw_id is String) else ""
+		var base_key: String = _safe_str(raw_id, "").strip_edges()
 		if base_key.is_empty():
 			base_key = "_idx_%d" % i
 		var key: String = base_key
@@ -522,7 +566,7 @@ func register_entries(
 		seen_keys[key] = true
 
 		var sprite_raw: Variant = entry.get("sprite_ref", "")
-		var sprite_ref: String = str(sprite_raw).strip_edges() if (sprite_raw is String) else ""
+		var sprite_ref: String = _safe_str(sprite_raw, "").strip_edges()
 		if not sprite_ref.is_empty():
 			if _is_valid_asset_ref(sprite_ref):
 				var adopt_res: Dictionary = _parse_json_dict(
@@ -534,15 +578,17 @@ func register_entries(
 							store.ShareLibraryAsset(global_root, sprite_ref)
 						)
 						if not bool(share_res.get("ok", false)):
-							_warn(session, "素材库共享贴图失败（%s）：%s" % [sprite_ref, str(share_res.get("reason", "unknown"))])
+							var share_reason: String = _safe_str(share_res.get("reason", "unknown"), "unknown")
+							_warn(session, "素材库共享贴图失败（%s）：%s" % [sprite_ref, share_reason if not share_reason.is_empty() else "unknown"])
 				else:
-					_warn(session, "素材库归档贴图失败（%s）：%s" % [sprite_ref, str(adopt_res.get("reason", "unknown"))])
+					var adopt_reason: String = _safe_str(adopt_res.get("reason", "unknown"), "unknown")
+					_warn(session, "素材库归档贴图失败（%s）：%s" % [sprite_ref, adopt_reason if not adopt_reason.is_empty() else "unknown"])
 					sprite_ref = ""
 			else:
 				sprite_ref = ""
 
 		var folder_raw2: Variant = entry.get("folder_name", "")
-		var folder_path: String = str(folder_raw2).strip_edges() if (folder_raw2 is String) else ""
+		var folder_path: String = _safe_str(folder_raw2, "").strip_edges()
 		var target_folder_id: String = ""
 		if not folder_path.is_empty():
 			var clean_segs: Array[String] = []
@@ -554,7 +600,7 @@ func register_entries(
 			target_folder_id = str(folder_ids.get(clean_key, ""))
 
 		var raw_name_v: Variant = entry.get("name", "")
-		var raw_name: String = str(raw_name_v) if (raw_name_v is String) else ""
+		var raw_name: String = _safe_str(raw_name_v, "")
 		var row_name: String = _sanitize_name(raw_name, "Unnamed Unit")
 
 		var raw_size: Vector2 = _to_vec2(entry.get("size_world", Vector2(64.0, 64.0)), Vector2(64.0, 64.0))
@@ -595,7 +641,7 @@ func register_entries(
 			row_dict = _build_unit_row(row_id, row_name, target_folder_id, sprite_ref, row_size)
 
 		var desired_u: PackedByteArray = var_to_bytes(row_dict)
-		var expected_u: PackedByteArray = records.get(row_id, PackedByteArray())
+		var expected_u: PackedByteArray = _safe_bytes(records.get(row_id, null))
 		if desired_u == expected_u:
 			registered_count += 1
 			continue
@@ -603,7 +649,7 @@ func register_entries(
 			store.WriteLibraryRecord(global_root, row_id, expected_u, desired_u, current_rev)
 		)
 		if bool(wu_res.get("ok", false)):
-			current_rev = str(wu_res.get("revision", current_rev))
+			current_rev = _safe_str(wu_res.get("revision", current_rev), current_rev)
 			mutations.append({
 				"id": row_id,
 				"prev_bytes": expected_u,
@@ -612,7 +658,8 @@ func register_entries(
 			records[row_id] = desired_u
 			registered_count += 1
 		else:
-			_warn(session, "写入素材库条目失败（%s）：%s" % [row_name, str(wu_res.get("reason", "unknown"))])
+			var wu_reason: String = _safe_str(wu_res.get("reason", "unknown"), "unknown")
+			_warn(session, "写入素材库条目失败（%s）：%s" % [row_name, wu_reason if not wu_reason.is_empty() else "unknown"])
 
 	if _is_cancelled(session):
 		_rollback_library_mutations(store, global_root, mutations, current_rev)

@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import time
 from typing import Any, Mapping
 from urllib.parse import urlsplit
 import uuid
@@ -22,7 +23,11 @@ import zipfile
 from .env_config import WorkspaceConfig, load_config
 from .packager import BuildArtifact, build_mod, compute_file_sha256, parse_numeric_semver
 from .validator import (
+    MAX_ARCHIVE_ENTRIES,
+    MAX_EXPANDED_BYTES,
+    MAX_PACKAGE_BYTES,
     MAX_SETTING_STRING_DEFAULT_LENGTH,
+    MIN_ARCHIVE_ENTRIES,
     check_zip_member_path,
     is_runtime_file,
     resolve_target_mods,
@@ -80,6 +85,24 @@ def _latest_source_mtime_ns(mod_dir: Path, sdk_dir: Path) -> int:
     return latest
 
 
+def _expected_source_files(mod_dir: Path, sdk_dir: Path, *, sdk_bundled: bool) -> list[str]:
+    expected: list[str] = []
+    if mod_dir.is_dir():
+        for item in mod_dir.rglob("*"):
+            if item.is_file() and is_runtime_file(item.relative_to(mod_dir)):
+                expected.append(item.relative_to(mod_dir).as_posix())
+    if sdk_bundled and sdk_dir.is_dir():
+        for sdk_item in sdk_dir.rglob("*.gd"):
+            if not sdk_item.is_file():
+                continue
+            rel_sdk = sdk_item.relative_to(sdk_dir)
+            if any(part.startswith(".") or part == "__pycache__" for part in rel_sdk.parts):
+                continue
+            expected.append(f"lib/fu_sdk/{rel_sdk.as_posix()}")
+    expected.sort()
+    return expected
+
+
 def _load_or_build_artifact(mod_name: str, cfg: WorkspaceConfig) -> tuple[BuildArtifact, bool]:
     """Return an up-to-date BuildArtifact, running `build_mod` automatically if missing or stale."""
     mod_dir = cfg.mods_dir / mod_name
@@ -103,7 +126,15 @@ def _load_or_build_artifact(mod_name: str, cfg: WorkspaceConfig) -> tuple[BuildA
             bm = json.loads(build_manifest_path.read_text(encoding="utf-8-sig"))
             pm = json.loads(plugin_json_path.read_text(encoding="utf-8-sig"))
             actual_sha = compute_file_sha256(zip_path)
-            if actual_sha != bm.get("sha256") or not isinstance(bm.get("file_hashes"), dict):
+            sdk_bundled = bool(bm.get("sdk_bundled", True))
+            recorded_files = bm.get("files")
+            expected_files = _expected_source_files(mod_dir, cfg.sdk_dir, sdk_bundled=sdk_bundled)
+            if (
+                actual_sha != bm.get("sha256")
+                or not isinstance(bm.get("file_hashes"), dict)
+                or not isinstance(recorded_files, list)
+                or sorted(str(x) for x in recorded_files) != expected_files
+            ):
                 needs_build = True
             else:
                 return (
@@ -116,8 +147,8 @@ def _load_or_build_artifact(mod_name: str, cfg: WorkspaceConfig) -> tuple[BuildA
                         manifest_path=build_manifest_path,
                         zip_size_bytes=int(bm["zip_size_bytes"]),
                         sha256=actual_sha,
-                        sdk_bundled=bool(bm.get("sdk_bundled", True)),
-                        files=list(bm.get("files", [])),
+                        sdk_bundled=sdk_bundled,
+                        files=list(recorded_files),
                         plugin_manifest=pm,
                         file_hashes=dict(bm.get("file_hashes", {})),
                     ),
@@ -232,7 +263,14 @@ def safe_extract_zip(zip_path: Path, destination_dir: Path) -> None:
     try:
         seen_lower: set[str] = set()
         with zipfile.ZipFile(zip_path, mode="r") as zf:
-            for member in zf.infolist():
+            infos = zf.infolist()
+            if len(infos) < MIN_ARCHIVE_ENTRIES or len(infos) > MAX_ARCHIVE_ENTRIES:
+                raise DeployError(
+                    f"plugin_file_limit: ZIP 条目数 ({len(infos)}) 不在宿主允许范围 {MIN_ARCHIVE_ENTRIES}..{MAX_ARCHIVE_ENTRIES} 内。"
+                )
+            declared_total = 0
+            actual_total = 0
+            for member in infos:
                 raw_name = member.filename
                 issues = check_zip_member_path(raw_name)
                 if issues:
@@ -240,6 +278,16 @@ def safe_extract_zip(zip_path: Path, destination_dir: Path) -> None:
 
                 if ((member.external_attr >> 16) & 0xF000) == 0xA000:
                     raise DeployError(f"zip_link_rejected: 拒绝解压符号链接条目 {raw_name!r}")
+
+                if member.file_size > MAX_PACKAGE_BYTES:
+                    raise DeployError(
+                        f"plugin_expanded_limit: 单文件 {raw_name!r} 体积 ({member.file_size} B) 超过 64 MiB 上限。"
+                    )
+                declared_total += member.file_size
+                if declared_total > MAX_EXPANDED_BYTES:
+                    raise DeployError(
+                        f"plugin_expanded_limit: 声明解压总体积超过 256 MiB 上限 ({MAX_EXPANDED_BYTES} B)。"
+                    )
 
                 folded = raw_name.lower()
                 if folded in seen_lower:
@@ -255,27 +303,51 @@ def safe_extract_zip(zip_path: Path, destination_dir: Path) -> None:
                     raise DeployError(f"unsafe_zip_path: 解压目标越出包目录 {raw_name!r}")
 
                 out_file.parent.mkdir(parents=True, exist_ok=True)
+                entry_written = 0
                 with zf.open(member, "r") as src_fp, out_file.open("wb") as dst_fp:
-                    shutil.copyfileobj(src_fp, dst_fp)
+                    while True:
+                        chunk = src_fp.read(65536)
+                        if not chunk:
+                            break
+                        entry_written += len(chunk)
+                        actual_total += len(chunk)
+                        if entry_written > MAX_PACKAGE_BYTES or actual_total > MAX_EXPANDED_BYTES:
+                            raise DeployError(
+                                f"plugin_expanded_limit: 解压实际字节数超过宿主上限 (single<=64MiB, total<=256MiB) at {raw_name!r}。"
+                            )
+                        dst_fp.write(chunk)
 
         if destination_dir.exists():
             try:
                 shutil.rmtree(destination_dir)
-                os.replace(tmp_dir, destination_dir)
             except PermissionError:
                 _remove_tree_best_effort(destination_dir)
-                destination_dir.mkdir(parents=True, exist_ok=True)
-                for item in tmp_dir.rglob("*"):
-                    if item.is_file():
-                        rel = item.relative_to(tmp_dir)
-                        dst_item = destination_dir / rel
-                        dst_item.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copyfile(item, dst_item)
-        else:
-            os.replace(tmp_dir, destination_dir)
+
+        placed = False
+        if not destination_dir.exists():
+            for attempt in range(4):
+                try:
+                    os.replace(tmp_dir, destination_dir)
+                    placed = True
+                    break
+                except PermissionError:
+                    if attempt < 3:
+                        time.sleep(0.05)
+
+        if not placed:
+            if destination_dir.exists():
+                _remove_tree_best_effort(destination_dir)
+            destination_dir.mkdir(parents=True, exist_ok=True)
+            for item in sorted(tmp_dir.rglob("*")):
+                rel = item.relative_to(tmp_dir)
+                dst_item = destination_dir / rel
+                if item.is_dir():
+                    dst_item.mkdir(parents=True, exist_ok=True)
+                elif item.is_file():
+                    dst_item.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(item, dst_item)
     finally:
-        if tmp_dir.exists():
-            shutil.rmtree(tmp_dir, ignore_errors=True)
+        _remove_tree_best_effort(tmp_dir)
 
 
 def _default_registry() -> dict[str, Any]:
@@ -338,6 +410,10 @@ def merge_registry_plugin_entry(
     merged_root = dict(registry)
     if "version" not in merged_root:
         merged_root["version"] = 1
+    else:
+        reg_ver = merged_root["version"]
+        if not (isinstance(reg_ver, int) and not isinstance(reg_ver, bool) and reg_ver == 1):
+            raise DeployError(f"invalid_plugin_registry: registry version 必须为 1，当前值：{reg_ver!r}")
 
     raw_plugins = merged_root.get("plugins")
     if not isinstance(raw_plugins, dict):

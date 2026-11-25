@@ -2,16 +2,16 @@
 
 > [!WARNING]
 > **Playtest 内测阶段免责声明**  
-> 当前处于 Playtest 内测阶段，后续插件与模块接口可能存在变更。本文档基于官方源码库（只读核验）与本地 Steam 客户端实际解包验证沉淀。  
-> **现役实测验证基准**：`Practice` 主线 `v0.0.60`（Git `origin/codex/playtest-v060-20261122`，Commit `cc3d43a5`，`2026-11-22`）/ Steam Playtest `v0.0.60`（Commit `cc3d43a`，`2026-11-22`）  
+> 当前处于 Playtest 内测阶段，后续插件与模块接口可能存在变更。本文档基于官方源码库（只读核验）与本地 Steam 客户端及 Playtest `v0.0.57`–`v0.0.62` 更新记录沉淀。  
+> **现役实测验证基准**：`Practice` 主线 `v0.0.60`（Git `origin/codex/playtest-v060-20261122`，Commit `cc3d43a5`，`2026-11-22`）/ Steam Playtest `v0.0.57`–`v0.0.62`（本地端 `v0.0.60`，Commit `cc3d43a`）  
 > **底盘引擎**：`Godot Engine v4.8.beta1.mono.official` (64-bit) + `.NET 10` CoreCLR  
-> **验证日期**：`2026-11-23`
+> **验证日期**：`2026-11-24`
 
 > [!IMPORTANT]
 > **官方仓库双代码线辨析（防止契约混用）**  
 > 官方源码库中并存两条世代相反的代码线：
-> 1. **现役生产主线 `Practice`（`origin/codex/playtest-v060-20261122` / Steam `v0.0.53` → `v0.0.60`）**：基于 Godot `4.8.beta1.mono` + C# `.NET 10` 的新一代重构线，外部插件唯一合法契约为 **`fus.session-plugin.v1`（`host_api = 1`, `scope = "session"`）**；
-> 2. **已替代的早期原型线 `FUS-F2`（本地检出分支 `codex/post-dnd-followups`, Commit `ff4a1600`, `2026-10-06`, 回落版本号 `v0.1.80`, Godot `4.8-dev4` 非 Mono）**：早于 `Practice` 线约 1.5 个月，包含 `dnd_sdr`、`f2.feature_plugin.v1` 与 `HostBridge API v7`，**无法在当前 Steam 客户端加载**。  
+> 1. **现役生产主线 `Practice`（`origin/codex/playtest-v060-20261122` / Steam `v0.0.53` → `v0.0.62`）**：基于 Godot `4.8.beta1.mono` + C# `.NET 10` 的新一代重构线，外部插件唯一合法契约为 **`fus.session-plugin.v1`（`host_api = 1`, `scope = "session"`）**；
+> 2. **已替代的早期原型线 `FUS-F2`（远端 `origin/HEAD` 默认分支 `codex/post-dnd-followups`, Commit `ff4a1600`, `2026-10-06`, 回落版本号 `v0.1.80`, Godot `4.8-dev4` 非 Mono）**：早于 `Practice` 线约 1.5 个月，包含 `dnd_sdr`、`f2.feature_plugin.v1` 与 `HostBridge API v7`，**无法在当前 Steam 客户端加载**。  
 > 本文档第 1～5 节 100% 锚定**现役 `Practice` 主线**；第 6 节将旧 `FUS-F2` 线 `dnd_sdr` 的核心设计模式作为前瞻架构参考独立归档。
 
 ---
@@ -60,9 +60,10 @@ Fu vtt（`Practice` 线）的本地桌面世界采用强校验、增量递增的
     "format": "fus.practice.world",
     "version": 3,
     "catalog": {
+      "floor_identity_version": 1,
       "active_floor_uid": "floor_main_uid",
       "floors": [
-        {"id": "floor_0", "floor_uid": "floor_main_uid", "name": "一层", "color": "#4a6b82"}
+        {"id": 0, "floor_uid": "floor_main_uid", "name": "一层", "color": "Color(0.29, 0.42, 0.51)"}
       ],
       "layers": {
         "schema": "fus.floor_layers.v2",
@@ -192,25 +193,32 @@ def pack_fobr(data: dict, output_path: str) -> None:
 
 现役 `Practice` 线彻底采用核心底座与可选模块解耦架构，但**当前所有桌面运行时模块均为受信任的内置模块**（由 `scenes/extension/desktop_feature_catalog.gd` 代码声明，**存档不提供可执行脚本路径**），**尚未对外开放第三方运行时规则插件**。
 
-### 4.1 内置模块清单规模（9 核心 + 21 可选，共 30 项）
+### 4.1 内置模块清单规模（9 核心 + 21 可选 + 3 候选）与 Playtest 禁用保护
 
 - **9 项核心底座（不可停用）**：`feature_networking`、`feature_component_sync`、`feature_edit_mode`、`feature_floor_system`、`feature_layer_stack`、`feature_obstacle_authoring`、`feature_debug_hooks`、`feature_component_library`、`feature_entity_library`。
 - **21 项内置可选模块（按战役显式启用，默认关闭）**：`campaign_time`、`image_flip`、`drag_movement`、`drawing`、`areas`、`room_chat`、`checklist`、`player_cursors`、`resource_pool`、`map_fog_editor`、`grid_alignment`、`detached_sidebar`、`character_roster`、`portal`、`backpack`、`dnd_opportunity`、`follow`、`simple_fog`、`dice`、`candidate_initiative`、`scene_box`。
-- **统一生命周期与状态持久化**：所有可选模块继承 `ExtensionBase`，通过 `prepare_module_state()`（树外预检）、`apply_module_state()` 与 `serialize_module_state()` 将纯数据状态写入 `world.modules`（`v2`）；通过精简版 `ExtensionContext` 登记组件、服务与 UI/网络 Slot（`network.actions`、`network.projections`、`network.presentations`、`save.readiness`、`ui.mode_bar`、`ui.mode_tools`、`ui.entity_actions`、`ui.canvas_actions`、`ui.sidebar_rail`）。
+- **3 项非目录候选模块（`scenes/candidates/`，未列入正式 `DesktopFeatureCatalog`）**：`entity_notes`、`music_board`、`module_example`（另 `CampaignRecord.RETIRED_MODULES` 收录 5 个已退役旧模块 `map`、`movement_blocking`、`vision_fog`、`native_light`、`fog_of_war`）。
+- **Steam Playtest `v0.0.61`–`v0.0.62` 临时禁用（`playtest_blocked`）与旧存档保留**：`DesktopFeatureCatalog`、`module_configuration.gd` 与 `network_module_contract.gd` 支持 `activation_blocked_reason` 门禁。在 Steam Playtest `v0.0.61`–`v0.0.62` 中，`campaign_time` 与 `dnd_opportunity` 被临时屏蔽启用（强制 `enabled = false`），但已有 `world.modules.entries` 数据会由 `FeatureManager` 与 `with_installed_defaults` 不透明保留、不阻断进桌。
+- **SDK 统一管控（`ModuleRegistry` & `LogBus`）**：`shared/sdk/fu_sdk/plugins/module_registry.gd` 完整收录上述 `30+3` 模块并支持 `probe_feature_manager()` 探测；当调用未启用、`playtest_blocked` 或 `uncatalogued_candidate` 模块的分脚本 SDK 时，自动经 `LogBus` 与 `ImportSession.add_warning` 输出包含模块 ID 与策略的警告，并在 `"preserve"`（默认，保留写入/自动停放）与 `"skip"`（跳过写入）间切换。
+- **统一生命周期与状态持久化**：所有可选模块继承 `ExtensionBase`，通过 `prepare_module_state()`（树外预检）、`apply_module_state()` 与 `serialize_module_state()` 将纯数据状态写入 `world.modules`（`v2`）；通过精简版 `ExtensionContext` 登记组件、服务与 UI/网络 Slot（全部冻结 48 个 `HookIds.TABLE` 内部钩子与 `SlotRegistry` 槽位，包括 `ui.desktop_panels`、`ui.mode_bar`、`ui.mode_tools`、`ui.entity_actions`、`ui.canvas_actions`、`ui.sidebar_rail`、`network.actions`/`projections`/`presentations`、`save.readiness`、`debug.actions` 等，暂不对第三方外部脚本开放）。
 
 ### 4.2 骰子、先攻与区域模块现状
 
 | 模块 ID | 入口与服务 | 当前能力与数据契约 | 规则插件扩展口现状 |
 | :--- | :--- | :--- | :--- |
-| **`dice`**（通用骰子） | `modules/dice/feature_dice.tscn` → `scenes/candidates/dice/feature_dice.gd`<br>服务：`dice.local_results` | 状态 `schema_version = 5`（归档上限 `32,768` 条 / `256` 段 / `2 MiB` 压缩，网络协议 `v3`）；`dice_expression.gd` 内置解析 `d4/d6/d8/d10/d12/d20/d100` 及外层 `adv`/`dis`（参数 `1..3`）与 `burst`（参数 `1..10`），单次最多 `20` 枚实体骰（D100 占 2 枚）；支持公开/暗骰与独立原生 3D 程序 `Desktop Dice`（Windows Job 托管）。 | **无外部修饰器钩子**；`modules/dice/README.md` 明确注明未迁入旧 Godot 托盘、Bepu 或 D&D 插件。 |
-| **`initiative`**（先攻与回合） | `modules/initiative/feature_initiative.tscn` → `scenes/candidates/initiative/feature_initiative.gd`<br>服务：`initiative.manual` | 规则无关的手动先攻列表与顶部先攻条，提供合作式本地显隐筛选（`entity_hidden`、`off_floor`、`layer_hidden`），不改写底层同步投影。 | **无外部公式注入接口**。 |
+| **`dice`**（通用骰子） | `modules/dice/feature_dice.tscn` → `scenes/candidates/dice/feature_dice.gd`<br>服务：`dice.local_results` | 状态 `schema_version = 5`、`dice_workspace` `v4`（`scenes/candidates/dice/model/dice_workspace.gd`，归档上限 `32,768` 条 / `256` 段 / `2 MiB` 压缩，网络协议 `v3`）；`dice_expression.gd` 内置解析 `d4/d6/d8/d10/d12/d20/d100` 及外层 `adv`/`dis`（参数 `1..3`）与 `burst`（参数 `1..10`），单次最多 `20` 枚实体骰（D100 占 2 枚）；支持公开/暗骰与独立原生 3D 程序 `Desktop Dice`（Windows Job 托管）。 | **无外部修饰器钩子**；`modules/dice/README.md` 明确注明未迁入旧 Godot 托盘、Bepu 或 D&D 插件。 |
+| **`candidate_initiative`**（先攻与回合） | `modules/initiative/feature_initiative.tscn` → `scenes/candidates/initiative/feature_initiative.gd`<br>服务：`initiative.manual` | `world.modules.entries["candidate_initiative"]`（`schema = 2`）+ `comp_initiative.gd`；规则无关的手动先攻列表与顶部先攻条，提供合作式本地显隐筛选（`entity_hidden`、`off_floor`、`layer_hidden`），不改写底层同步投影。 | **无外部公式注入接口**。 |
 | **`areas`**（区域） | `modules/areas/areas.gd`<br>服务：`areas` | 注册私有组件 `comp_area.gd`（`network_scope = "private"`）、编辑模式 `areas.edit` 与 `actor_entered`/`actor_exited` 信号；支持圆形/矩形/多边形及布尔运算（独立/并集/交集/擦除），并向 `ui.entity_actions` 注入门口靠近“开门/关门”按钮（支持 `present_during_drag` 拖拽期呈现）。 | **无 D&D 困难地形/轻重遮蔽视野规则契约**。 |
 
-### 4.3 D&D 规则集、宏系统与角色卡当前状态
+### 4.3 `v0.0.58`–`v0.0.62` 模块数据契约、`checklist` 宏规则与 `fu_sdk` 分脚本覆盖
 
-- 虽然 `v0.0.60` 已在内置 `DesktopFeatureCatalog` 中包含 `dnd_opportunity`（D&D 角色卡与百科）、`backpack`、`resource_pool`、`character_roster`、`campaign_time`、`checklist` 与转正后的 `scene_box`（场景盒子，`modules/scene_box/comp_scene_box.gd`）等受信任内置可选模块，但 `docs/TODO.md` 中部分“传送门、DND、快捷移动”细节仍在演进；
-- 现役客户端**仍未向外部插件开放第三方运行时规则插件 API、外部宏执行引擎或运行时 UI/Action Slot 注入**；
-- 当前外部开发者面向 Steam `Practice` 客户端构建扩展的唯一受支持路径，依然是符合 **`fus.session-plugin.v1`（`host_api = 1`, `scope = "session"`）** 的离线场景/数据导入插件（详见 `shared/docs/plugin-lifecycle.md`）。若需持久化多场景、场景盒子、可复用角色/怪物棋子模板及完整 TRPG 数值摘要，请直接使用 `fu_sdk` `v1.3.0` 与 `modules/entity_library_writer.gd`。
+- **内置 `checklist` 宏规则 DSL（`<FUS_REPO_DIR>/modules/checklist/book.gd`、`rule.gd`）**：
+  - `world.modules.entries["checklist"]` 宿主端支持 `schema` 取值 `[1, 2]`（`LIMIT = 128`、受众 `"all" | "player" | "gm"`）。宿主 `Book.validate()` / `Book.restore()`（`book.gd:51-57, 185-197`）对所有非空 `row.source` 无条件调用 `Rule.parse(row.source)`（`rule.gd:86-116`），**宿主运行时仅接受空串 `""` 或合法 `on <事件名>:` DSL 宏，在 `Book.restore()` 时会拒绝 `"mod:..."` 等非宏来源标签**。
+  - `shared/sdk/fu_sdk/plugins/checklist.gd`（`MAX_ROWS = 128`、`_is_mod_source_tag`）仅在 **SDK 校验侧** 额外放行 `^mod:[A-Za-z0-9_.:-]+$` 来源标签以供离线导入归档溯源（若目标存档需供实机宿主已启用的 `checklist` 模块加载恢复，调用方仍须将 `source` 留空 `""` 或填写合法 `on <事件名>:` 宏）。
+  - 内置规则解析器支持 **13 个宿主事件**（`entity.motion_committed`、`camera.navigated`、`mode.changed`、`selection.changed`、`comp.added`、`comp.removed`、`comp.state_changed`、`drawing.stroke_committed`、`ui.panel_opened`、`entity.spawned`、`floor.changed`、`module.toggled`、`portal.teleported`）、比较算子（`==`/`!=`/`>=`）、逻辑连接（`and`/`or`）、`return`、`task.complete_once()` 与 7 套内置模板；**仍不向外部脚本开放任意 GDScript 宏执行或 `HookIds.TABLE`（48 个冻结钩子）自定义注册**。
+- **`v0.0.58`–`v0.0.62` 原生玩法模块契约与独立 SDK 覆盖（`shared/sdk/fu_sdk/plugins/*.gd`）**：
+  - `resource_pool`（`v1` 定义 + `comp_resource_pool.gd`）、`character_roster`（`v1` + 仅限活体 `unit` 的 `comp_character_roster_member.gd`）、`backpack`（`comp_backpack.gd` 16 槽位 `"0".."15"`、`MAX_STACK = 999`、`MAX_ITEM_BYTES = 8192`）、`follow`（`comp_follow.gd` 循环依赖检测）、`drawing`（`v1` 含 `v0.0.61` `text_ink.gd` `Transform2D` `affine` 与 `["sans", "zhuokai"]` `12..256` px 文字图元）、`campaign_time`（`v1` 时间源与效果状态）、`dnd_opportunity`（`v1` 支持 `2014` / `2024` 版式卡片）；
+  - 现役客户端**仍未向外部插件开放第三方运行时规则插件、外部宏执行引擎或运行时 UI/Action Slot 注入**；外部扩展唯一受支持路径为符合 **`fus.session-plugin.v1`（`host_api = 1`, `scope = "session"`）** 的离线导入插件（参考独立控制台日志插件 `mods/sdk-log-console/` 与 `shared/docs/plugin-lifecycle.md`）。若需构建合规的多场景、玩法模块数据或全局素材库，请直接使用 `fu_sdk`（`v1.3.0`，含 `LogBus`、`ModuleRegistry`、23 个独立 `plugins/<module_id>.gd` 与 `modules/entity_library_writer.gd`）。
 
 ### 4.4 `EntityLibraryStore` 素材库集成契约（`<root>/entity-library/`）
 

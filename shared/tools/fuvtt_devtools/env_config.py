@@ -75,7 +75,12 @@ def parse_dotenv_file(env_file: Path) -> dict[str, str]:
     """Read and parse a `.env` file if it exists."""
     if not env_file.is_file():
         return {}
-    content = env_file.read_text(encoding="utf-8-sig")
+    try:
+        content = env_file.read_text(encoding="utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise ConfigError(f"环境配置文件 '{env_file}' 不是合法 UTF-8 编码：{exc}") from exc
+    if "\x00" in content:
+        raise ConfigError(f"环境配置文件 '{env_file}' 包含非法 NUL 字节。")
     return parse_dotenv_text(content)
 
 

@@ -18,12 +18,13 @@
 
 1. **根路由优先，严格精简**：本文件仅负责目录路由、沙箱边界与通用规范，保持在 150 行以内。
 2. **插件局部上下文**：开发或修改具体插件时，优先读取目标插件的 `mods/<mod-name>/AGENTS.md`，获取该插件的业务目标、当前进度、独立构建命令与所需文档索引。
-3. **共享文档按需显式读取**：仅在任务涉及对应领域时，按需打开 `shared/docs/` 下对应文档，禁止全量预加载：
+3. **共享 SDK 局部上下文**：新增或修改 `shared/sdk/` 下防腐层与分插件 SDK 时，必须遵守 `shared/sdk/AGENTS.md` 中的内存防环、单一克隆源与 GDScript 类型安全不变量。
+4. **共享文档按需显式读取**：仅在任务涉及对应领域时，按需打开 `shared/docs/` 下对应文档，禁止全量预加载：
    - `shared/docs/plugin-lifecycle.md` — 插件入口、配置清单与加载生命周期
    - `shared/docs/desktop-and-scene-api.md` — 2D/3D 场景地图、战争迷雾、多层高度与角色权限接口
    - `shared/docs/macro-and-rules.md` — 内置宏系统钩子、障碍物烘焙与 TRPG 规则数据适配
    - `shared/docs/playtest-notes.md` — Steam Playtest 双代码线辨析、版本变动与兼容性踩坑记录
-4. **零幻觉与实证原则**：Fu vtt 处于 Steam Playtest 阶段，严禁凭空编造未验证的底层 API、Manifest 字段或钩子签名，严禁将 Fu vtt 与 Foundry VTT 等其他 VTT 平台接口混用；所有接口必须先依据本地 Playtest 客户端或只读官方源码核实后，再沉淀至 `shared/docs/`。
+5. **零幻觉与实证原则**：Fu vtt 处于 Steam Playtest 阶段，严禁凭空编造未验证的底层 API、Manifest 字段或钩子签名，严禁将 Fu vtt 与 Foundry VTT 等其他 VTT 平台接口混用；所有接口必须先依据本地 Playtest 客户端或只读官方源码（可激活 `fus-contract-lookup` 技能速查）核实后，再沉淀至 `shared/docs/`。
 
 ## 3. 沙箱边界与环境隔离约束
 

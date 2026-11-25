@@ -2,10 +2,10 @@
 
 > [!WARNING]
 > **Playtest 内测阶段免责声明**  
-> 当前处于 Playtest 内测阶段，后续 mod 接口可能存在变更。本文档基于官方源码库 `Practice` 主线（远端分支 `origin/codex/playtest-v060-20261122`）与本机 Steam 客户端实机双源核实沉淀。  
-> **实测验证基准**：现役 `Practice` 主线 `v0.0.60`（Commit `cc3d43a5`，`2026-11-22`）/ Steam Playtest 客户端 `v0.0.60`（Commit `cc3d43a`，`2026-11-22`）  
+> 当前处于 Playtest 内测阶段，后续 mod 接口可能存在变更。本文档基于官方源码库 `Practice` 主线（远端分支 `origin/codex/playtest-v060-20261122`）与本机 Steam 客户端及 Playtest `v0.0.57`–`v0.0.62` 更新记录核实沉淀。  
+> **实测验证基准**：现役 `Practice` 主线 `v0.0.60`（Commit `cc3d43a5`，`2026-11-22`）/ Steam Playtest `v0.0.57`–`v0.0.62`（本地端 `v0.0.60`，Commit `cc3d43a`）  
 > **底盘引擎**：`Godot Engine v4.8.beta1.mono.official` (64-bit) + `.NET 10 CoreCLR`  
-> **验证日期**：`2026-11-23`
+> **验证日期**：`2026-11-24`
 
 ---
 
@@ -93,8 +93,8 @@ const SOURCE_TO_WORLD := 64.0 / 150.0 # 0.4266666667
 ```
 
 - **`cell_size`**：有限浮点数，范围 `[8.0, 4096.0]`（Fu VTT 世界单位，默认 `64.0`）。
-- **`offset` / `color`**：分别以 2 元素和 4 元素 `float` 数组序列化（对应 `Vector2` 偏移与 RGBA 线框色）。
-- **现役限制**：`grid_alignment` 为**全局单一方格网格**配置（不支持六边形网格或按楼层设置不同 `cell_size`）；同时由于 `ImportBridge.run()` 默认设置 `metadata.module_choices = []`，导入后 `grid_alignment` 处于关闭状态，需由 GM 在战役设置中启用（可通过 `fu_sdk` `v1.3.0` 的 `WorldBuilder.configure_grid_alignment(...)` 一键写入）。
+- **`offset` / `color` / `line_width` / `snap_strength`**：`offset` 为 2 元素有限浮点数组，分量范围 `[-1e6, 1e6]`；`color` 为 4 元素 RGBA 浮点数组（`[0.0, 1.0]`）；`line_width` 范围 `[0.5, 4.0]`；`snap_strength` 范围 `[0.0, 1.0]`。
+- **现役限制与 SDK 入口**：`grid_alignment` 为**全局单一方格网格**配置（不支持六边形网格或按楼层设置不同 `cell_size`）；同时由于 `ImportBridge.run()` 默认设置 `metadata.module_choices = []`，导入后 `grid_alignment` 处于关闭状态，需由 GM 在战役设置中启用（可通过 `fu_sdk` 的 `WorldBuilder.configure_grid_alignment(...)` 或独立分脚本 `builder.grid_alignment()` 一键写入）。
 
 ### 1.3 图片金字塔（LOD）与 3D 物理骰子管线
 
@@ -254,6 +254,7 @@ const SOURCE_TO_WORLD := 64.0 / 150.0 # 0.4266666667
 ### 3.3 双迷雾模块（互斥）与不可见纯光源锚点配置
 
 - **简易迷雾 (`modules/simple_fog/`)**：合作式本机 GPU 视野/光照显隐（挂载 `comp_simple_vision.gd` / `comp_simple_light.gd`），**不参与实体披露拦截**，操控权撤回仅收回该角色的观察源。`radius` 接收 **Fu VTT 世界单位**（从源网格距离换算公式：`(range_units / maxf(0.01, grid_distance)) * 64.0`），`view_angle` 单位为度（外部输入 `<= 0` 或 `>= 360` 时应归一为 `360.0`）。
+  - **`fog_config.gd` v2 世界模块配置与 `"SFH2"` 探索历史（`v0.0.60` / `v0.0.61`）**：`world.modules.entries["simple_fog"]` 支持 `version = 2` 共 14 项核心配置（`unseen_color` 须满足 `a == 1.0`、`visible_tint`、`history_enabled`、`history_color`、`unseen_effect` / `visible_effect` / `history_effect` 取值 `EFFECT_IDS = [0, 1, 2, 4, 6]`、`dm_opacity ∈ [0.01, 1.0]`、`vision_threshold ∈ [0.0, 1.0]`、`vision_feather ∈ [0.0, 0.5]`、`shadow_filter ∈ [0, 1, 2]`、`shadow_smooth ∈ [0.0, 16.0]`、`hide_unseen_entities`），以及以 `"SFH2"` 魔数开头的 `exploration` 压缩历史字节（`> 8 B`、压缩 `<= 4 MiB`、解压 `<= 64 MiB`），可通过 `builder.simple_fog()`（`plugins/simple_fog.gd`）直接校验与写入。
 - **不可见纯光源锚点（抑制默认灰色占位方块）**：导入独立的环境点光源时，若通过普通无贴图实体（`sprite_path = ""`、`entity_type = "object"`、`selectable_in_select_mode = false`）挂载 `comp_simple_light.gd`，默认 `show_fallback = true` 会在地图上渲染出一个灰色方块。必须同时将**实体顶层 `entity["fallback_color"]`** 与 **`components[0]["state"]["fallback_color"]`** 设为透明色 `Color(1, 1, 1, 0)`，并将 **`components[0]["state"]["show_fallback"]`** 设为 `false`（`fu_sdk` v1.2.0 提供 `WorldBuilder.add_point_light(...)` 与 `suppress_entity_fallback_box(entity_id)` 自动完成上述设置）。
 - **完整迷雾（与简易迷雾互斥）**：基于 `PointLight2D` / `LightOccluder2D`（R 基础视距 / G 通往亮区视线 / B 环境照明，合成 `max(R, min(G, B))`）+ 原生 C# `FogGeometryKernel*.cs` 后台计算按角色/楼层隔离的探索历史，只向玩家下发当前获准角色的匿名历史几何。
 
@@ -313,7 +314,14 @@ const SOURCE_TO_WORLD := 64.0 / 150.0 # 0.4266666667
 
 ### 4.3 现役 `Practice` 全量 21 个非测试 `comp_*.gd` 组件速查表
 
-所有未安装或当前未启用的可选组件记录可在序列化时携带 `"parked": true`，并可附带可选布尔键 `"manual"`（宿主仅当 `"parked" == true` 时允许携带 `"manual": bool`，用于区分手工停放与自动停放）；宿主校验时将不透明保留其状态，防止数据丢失。
+所有未安装或当前未启用的可选组件记录可在序列化时携带 `"parked": true`，并可附带可选布尔键 `"manual"`（`<FUS_REPO_DIR>/scenes/entities/board_token.gd:301-368` 规定宿主仅当 `"parked" == true` 时允许携带 `"manual": bool`，用于区分手工停放与自动停放）；宿主 `EntityStateCodec` 校验时将不透明保留其状态，并在目标模块启用时自动恢复。在 `shared/sdk/fu_sdk/` 中可通过 `attach_component(entity_id, script_path, state, parked, manual)` / `attach_parked_component(...)` 写入停放组件，各原生插件的业务 API 已拆分为独立的 `shared/sdk/fu_sdk/plugins/<module_id>.gd` 脚本，并受 `ModuleRegistry` 未启用警告与 `"preserve"`/`"skip"` 策略管控。
+
+> [!NOTE]
+> **实体类型与互斥约束（`v0.0.60`–`v0.0.62`）**：
+> - **单位身份（`BoardToken.is_unit()`）与非 `"map"` 约束**：`comp_unit.gd` 与 `comp_character_roster_member.gd` 要求 `entity_type != "map"`；`comp_character_roster_member.gd` 与 `comp_backpack.gd` 校验宿主实体满足 `BoardToken.is_unit()`（即 `board_token.gd:73-78` 定义的 `selectable_in_select_mode` 为真或已挂载活跃的 `comp_unit.gd`，并非字面检查 `entity_type == "unit"`），且不能与其他冲突组件共存。
+> - **`SCENE_BOX_CONFLICTS` 对称校验（含活体与停放态）**：`comp_scene_box.gd` 要求 `entity_type != "map"`，并与 14 个组件 ID（`unit`、`obstacle`、`area`、`image_flip`、`portal`、`character_roster_member`、`initiative`、`resource_pool`、`backpack`、`drag_speed`、`follow`、`simple_vision`、`simple_light`、`entity_ink`）在活体与 `parked` 状态下均严格互斥；同时 `image_flip` 与 `obstacle`/`area`/`scene_box` 互为双向冲突。
+> - **未入正式目录候选模块（`entity_notes`）**：在 `v0.0.60` `DesktopFeatureCatalog.trusted_entries()` 中未注册 `entity_notes`，因此 `EntityStateCodec.prepare`（`entity_state_codec.gd:352-356`）在载入携带 `comp_entity_note.gd` 的实体时会自动将其停放至 `_parked`（`plugins/entity_notes.gd` 在 `"preserve"` 下自动按停放态写入并触发 `uncatalogued_candidate` 警告）。
+> - **`drawing` `text_ink.gd`（`v0.0.61`）**：世界绘制模块除矢量墨迹外新增文字图元（`TEXT_FONTS = ["sans", "zhuokai"]`、`font_size ∈ [12, 256]` px、`Transform2D` `affine` 矩阵，详见 `plugins/drawing.gd`）。
 
 | # | 脚本路径 (`res://...`) | 核心持久化字段 | 职责与网络/权限说明 |
 | :--- | :--- | :--- | :--- |
@@ -372,6 +380,6 @@ const SOURCE_TO_WORLD := 64.0 / 150.0 # 0.4266666667
 ## 6. 附录：旧原型线 `FUS-F2` (`v0.1.80`) 架构差异备忘
 
 > [!NOTE]
-> 官方源码仓库本地默认检出分支 `codex/post-dnd-followups`（Commit `ff4a1600`，`2026-10-06`，`v0.1.80`）为**已被现役 `Practice` 替代的早期纯 GDScript + C++ 原型线**，请勿与现役 Steam `Practice` 混用：
+> 官方源码仓库远端 `origin/HEAD` 默认分支 `codex/post-dnd-followups`（Commit `ff4a1600`，`2026-10-06`，`v0.1.80`）为**已被现役 `Practice` 替代的早期纯 GDScript + C++ 原型线**，请勿与现役 Steam `Practice` 混用：
 > - 旧线存档为 `SessionSaveManager` 单文件 `var_to_bytes`，使用 `fus.floor_layers.v1`（无 `kind` 字段），将墙/门/窗/空气拆为独立 `DrawnShape`（`StaticBody2D`），其 `CompVisual` **不含 `vector_drawing` 与 `source_info`**；
 > - 旧线含 29 个 `comp_*.gd`（含 `comp_air.gd`、`comp_barrier.gd`、`comp_door.gd`、`comp_faction.gd`、`comp_backpack.gd` 与 `dnd_sdr` 的 2 个组件），联机采用 `EntityReplicationPolicy` 服务端严密隐藏信息过滤、`FeatureComponentSync` Hook 自动同步与 C++ `fus_history_geometry` 分块蒙版 v5。

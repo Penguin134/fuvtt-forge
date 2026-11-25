@@ -1,0 +1,28 @@
+{
+  "name": "SDK Log Console Diagnostic Sample",
+  "enabled_modules": ["simple_fog"],
+  "audit_modules": ["simple_fog", "campaign_time", "checklist", "drawing"],
+  "disabled_policy": "preserve",
+  "emit_debug": true,
+  "emit_in_world": true,
+  "entries": [
+    {
+      "level": "debug",
+      "source": "console_sample",
+      "message": "Initialized SDK diagnostic manifest sample.",
+      "context": {"phase": "boot"}
+    },
+    {
+      "level": "info",
+      "source": "console_sample",
+      "message": "Auditing native plugin availability and R2 warning routing.",
+      "context": {"phase": "audit"}
+    },
+    {
+      "level": "warning",
+      "source": "console_sample",
+      "message": "Sample warning entry routed via R3 LogBus.",
+      "context": {"phase": "verify"}
+    }
+  ]
+}

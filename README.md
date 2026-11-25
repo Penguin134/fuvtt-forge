@@ -8,7 +8,7 @@
 
 ## 1. 快速上手：如何把 Mod 构建并导入游戏
 
-克隆本仓库后，`mods/` 目录默认仅包含标准脚手架模板 `mods/_template/`（其余具体插件子目录均已配置 `.gitignore` 忽略，便于各插件作为独立 Git 仓库单独维护）。你可以用 3 分钟先生成一个最小示例插件并完整走通导入游戏的流程：
+克隆本仓库后，`mods/` 目录默认包含标准脚手架模板 `mods/_template/` 与内置日志诊断示例插件 `mods/sdk-log-console/`（其余具体插件子目录均已配置 `.gitignore` 忽略，便于各插件作为独立 Git 仓库单独维护）。你可以用 3 分钟先生成一个最小示例插件并完整走通导入游戏的流程：
 
 ### 前置准备
 
@@ -97,12 +97,13 @@ Fu vtt 客户端会对已安装插件执行严格的逐文件 SHA-256 防篡改�
 
 ```text
 fuvtt-forge/
-├── mods/                            # 独立 Mod 源码根目录（除 _template 外均被主仓 .gitignore 忽略，支持各插件独立建仓）
+├── mods/                            # 独立 Mod 源码根目录（除 _template 与 sdk-log-console 外均被主仓 .gitignore 忽略，支持各插件独立建仓）
 │   ├── _template/                   # 随主仓版本控制的标准插件脚手架模板（供 init 命令生成新插件使用）
+│   ├── sdk-log-console/             # 随主仓版本控制的日志与模块诊断示例插件（演示 LogBus 订阅与 ModuleRegistry 审计）
 │   └── <your-mod>/                  # 通过 init 新建或从其他独立仓库克隆放入的业务插件目录（不随本主仓提交）
 ├── shared/                          # 跨插件共享基础设施
 │   ├── sdk/
-│   │   └── fu_sdk/                  # 核心 SDK（v1.gd 门面、宿主适配器与 4 个扩展子模块，build 时自动打入插件包）
+│   │   └── fu_sdk/                  # 核心 SDK（v1.gd 门面、宿主适配器、23 个分插件 SDK、LogBus 日志总线与 utils 公共工具，build 时自动打入插件包）
 │   ├── tools/
 │   │   ├── fuvtt_cli.py             # 命令行工具统一入口（零外部依赖 Python 3 实现）
 │   │   ├── fuvtt_devtools/          # 脚手架、静态校验、打包、HTTP 热更服务、离线同步与无头测试模块
@@ -129,12 +130,7 @@ fuvtt-forge/
 
 ## 5. 开发者文档与 SDK Wiki 导览
 
-详细的零 Godot 基础入门教程、`plugin.json` 字段表与 `fu_sdk v1.3.0` 全量 API 参数/返回值参考已按模块拆分发布至 [fuvtt-forge Wiki](https://github.com/Penguin134/fuvtt-forge/wiki)，建议按以下顺序查阅：
+完整的零 Godot 基础入门教程、`plugin.json` 清单规范与 `fu_sdk v1.3.0` 全模块 API 手册已发布至 [fuvtt-forge Wiki](https://github.com/Penguin134/fuvtt-forge/wiki)（其余核心 API 与分插件手册可通过 Wiki 侧栏或首页索引查阅）：
 
-1. **[首页：概念映射与 API 速查](https://github.com/Penguin134/fuvtt-forge/wiki)**（`Home.md`）— 了解插件能力边界、世界“场景 -> 楼层 -> 图层 -> 实体”空间模型、数据类型与通用编程语言对照表，以及“想实现什么功能该调哪个 API”的全局索引表。
-2. **[快速上手：构建并导入完整 Demo](https://github.com/Penguin134/fuvtt-forge/wiki/Quickstart-and-Demo)**（`Quickstart-and-Demo.md`）— 跟着一个完整的 `.roomjson` 房间导入器实例（含输入 JSON 字段定义表与逐段注释代码）从零跑通开发闭环。
-3. **[清单规范与生命周期](https://github.com/Penguin134/fuvtt-forge/wiki/Manifest-and-Lifecycle)**（`Manifest-and-Lifecycle.md`）— 查阅 `plugin.json` 全部 11 个顶层字段与 `settings` 控件规则、SDK 动态导入模板及 `entry.gd` 两阶段钩子契约。
-4. **[核心 API（一）：FuSdk 与 ImportSession](https://github.com/Penguin134/fuvtt-forge/wiki/API-Facade-and-Session)**（`API-Facade-and-Session.md`）— 查阅顶层工厂、脏数据类型安全清洗、用户设置读取、远端图片下载归档及预检字典构造器。
-5. **[核心 API（二）：WorldBuilder 世界构建](https://github.com/Penguin134/fuvtt-forge/wiki/API-WorldBuilder)**（`API-WorldBuilder.md`）— 查阅多场景、多楼层、权限图层、底图、棋子、多边形/线段墙门、迷雾视野光源、Scene Box 传送盒及模块数据持久化的完整参数与返回值。
-6. **[扩展子模块 API](https://github.com/Penguin134/fuvtt-forge/wiki/API-Extension-Modules)**（`API-Extension-Modules.md`）— 查阅 `.zip`/目录统一读取器 `PackageSource`、本地贴图预检转码发布器 `AssetPublisher`、全局角色素材库写入器 `EntityLibraryWriter` 与 `SnappyCodec`。
-7. **[CLI 工具全解、玩家安装与排错指南](https://github.com/Penguin134/fuvtt-forge/wiki/CLI-and-Troubleshooting)**（`CLI-and-Troubleshooting.md`）— 查阅 `.env.local` 配置项、7 大 CLI 子命令细节与常见报错代码排查方法。
+1. **[首页：能力边界与全局 API 索引](https://github.com/Penguin134/fuvtt-forge/wiki)**（`Home.md`）— 了解插件能力边界、世界“场景 -> 楼层 -> 图层 -> 实体”空间模型，并通过全局功能索引直达各原生插件与扩展模块 API。
+2. **[快速上手：从零构建并导入完整 Demo](https://github.com/Penguin134/fuvtt-forge/wiki/Quickstart-and-Demo)**（`Quickstart-and-Demo.md`，建议配合前置概念导读 [Getting-Started](https://github.com/Penguin134/fuvtt-forge/wiki/Getting-Started) 阅读）— 先快速理清核心对象调用关系与避坑要点，再跟着完整的 `.roomjson` 房间导入器实例从零跑通开发闭环。

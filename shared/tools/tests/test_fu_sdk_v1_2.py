@@ -8,7 +8,7 @@ Covers:
    `CREATE_NO_WINDOW`) execution with isolated `APPDATA`/`LOCALAPPDATA`/`TEMP`/
    `TMP` and strict zero Godot `ERROR:` / `SCRIPT ERROR` / leak assertions,
    exercising:
-   - `v1.gd` (`SDK_VERSION == "1.2.0"`, module factories, `coerce_*`,
+   - `v1.gd` (`SDK_VERSION == "1.3.0"`, module factories, `coerce_*`,
      `ImportSession` options & `proxy: null` safety & `ok_inspect` metadata,
      `WorldBuilder` `rename_floor`, 2-pt segment extrusion including `1e7` ULP
      safety, `add_point_light` + fallback suppression, `configure_grid_alignment`,
@@ -56,10 +56,39 @@ TEST_TMP_ROOT = _WORKSPACE_ROOT / ".cache" / "test_tmp"
 EXPECTED_SDK_FILES = (
     "v1.gd",
     "adapters/host_v1_adapter.gd",
+    "logging/log_bus.gd",
+    "utils/dag_cloner.gd",
+    "utils/bounded_cloner.gd",
+    "utils/value_utils.gd",
+    "utils/validation_utils.gd",
     "modules/asset_publisher.gd",
     "modules/entity_library_writer.gd",
     "modules/package_source.gd",
     "modules/snappy.gd",
+    "plugins/module_registry.gd",
+    "plugins/feature_edit_mode.gd",
+    "plugins/feature_floor_system.gd",
+    "plugins/feature_layer_stack.gd",
+    "plugins/feature_obstacle_authoring.gd",
+    "plugins/feature_entity_library.gd",
+    "plugins/scene_box.gd",
+    "plugins/portal.gd",
+    "plugins/grid_alignment.gd",
+    "plugins/simple_fog.gd",
+    "plugins/image_flip.gd",
+    "plugins/drag_movement.gd",
+    "plugins/drawing.gd",
+    "plugins/areas.gd",
+    "plugins/entity_notes.gd",
+    "plugins/checklist.gd",
+    "plugins/resource_pool.gd",
+    "plugins/character_roster.gd",
+    "plugins/backpack.gd",
+    "plugins/follow.gd",
+    "plugins/candidate_initiative.gd",
+    "plugins/dice.gd",
+    "plugins/campaign_time.gd",
+    "plugins/dnd_opportunity.gd",
 )
 
 HARDCODED_PATH_RE = re.compile(
@@ -961,6 +990,14 @@ class TestFuSdkStaticHygiene(unittest.TestCase):
                         "SHARED_ASSET_STORE_PATH" in arg or "res://services/" in arg,
                         f"{rel} must not load sibling .gd scripts (found load({arg}))",
                     )
+            elif rel.startswith("utils/"):
+                code_only = "\n".join(
+                    ln.split("#", 1)[0] for ln in text.splitlines()
+                )
+                self.assertIsNone(
+                    re.search(r"\bload\s*\(", code_only),
+                    f"{rel} must be leaf-level with zero load() calls",
+                )
 
 
 class TestFuSdkV12HeadlessGodot(unittest.TestCase):

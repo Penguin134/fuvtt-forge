@@ -12,22 +12,44 @@ extends RefCounted
 
 const SDK_VERSION: String = "1.3.0"
 const ADAPTER_REL_PATH: String = "adapters/host_v1_adapter.gd"
+const LOG_BUS_REL_PATH: String = "logging/log_bus.gd"
+const MODULE_REGISTRY_REL_PATH: String = "plugins/module_registry.gd"
+const ENTITY_LIBRARY_WRITER_REL_PATH: String = "modules/entity_library_writer.gd"
+const DAG_CLONER_REL_PATH: String = "utils/dag_cloner.gd"
+const VALUE_UTILS_REL_PATH: String = "utils/value_utils.gd"
+const VALIDATION_UTILS_REL_PATH: String = "utils/validation_utils.gd"
 const DEV_FALLBACK_ADAPTER_PATH: String = "shared/sdk/fu_sdk/adapters/host_v1_adapter.gd"
 const DEV_FALLBACK_SDK_DIR: String = "shared/sdk/fu_sdk/"
 
 var _adapter_script: Script = null
+var _custom_adapter_override: bool = false
 var _helper_adapter: RefCounted = null
+var _helper_registry: RefCounted = null
 var _sub_script_cache: Dictionary = {}
 
 
 func _init(custom_adapter_script: Script = null) -> void:
 	if custom_adapter_script != null:
 		_adapter_script = custom_adapter_script
+		_custom_adapter_override = true
 	else:
 		_adapter_script = _load_adapter_from_outer_script()
 	if _adapter_script != null:
 		ImportSession.set_default_adapter_script(_adapter_script)
 		WorldBuilder.set_default_adapter_script(_adapter_script)
+	var log_bus_scr: Script = _load_sdk_sub_script(LOG_BUS_REL_PATH)
+	if log_bus_scr != null:
+		ImportSession.set_default_logger_script(log_bus_scr)
+		WorldBuilder.set_default_logger_script(log_bus_scr)
+	var reg_scr: Script = _load_sdk_sub_script(MODULE_REGISTRY_REL_PATH)
+	if reg_scr != null:
+		WorldBuilder.set_default_module_registry_script(reg_scr)
+	var writer_scr: Script = _load_sdk_sub_script(ENTITY_LIBRARY_WRITER_REL_PATH)
+	if writer_scr != null:
+		WorldBuilder.set_default_entity_library_writer_script(writer_scr)
+	var outer_scr := get_script() as Script
+	if outer_scr != null and not outer_scr.resource_path.is_empty():
+		WorldBuilder.set_default_sdk_dir(outer_scr.resource_path.split("::")[0].get_base_dir())
 
 
 func create_adapter() -> RefCounted:
@@ -40,8 +62,62 @@ func create_adapter() -> RefCounted:
 	return null
 
 
+func create_logger(options: Dictionary = {}) -> RefCounted:
+	var scr: Script = _load_sdk_sub_script(LOG_BUS_REL_PATH)
+	if scr == null:
+		return null
+	var logger: RefCounted = scr.new()
+	if not options.is_empty():
+		var max_entries: int = coerce_int(options.get("max_entries", logger.DEFAULT_MAX_ENTRIES), logger.DEFAULT_MAX_ENTRIES)
+		var min_level: int = coerce_int(options.get("min_level", logger.LEVEL_DEBUG), logger.LEVEL_DEBUG)
+		var emit_to_engine: bool = coerce_bool(options.get("emit_to_engine", true), true)
+		logger.configure(max_entries, min_level, emit_to_engine)
+		var host_var: Variant = options.get("host", null)
+		if host_var is RefCounted:
+			logger.attach_import_host(host_var as RefCounted, coerce_bool(options.get("forward_reports", false), false))
+	return logger
+
+
+func create_module_registry(
+	log_bus: RefCounted = null,
+	session: ImportSession = null
+) -> RefCounted:
+	var scr: Script = _load_sdk_sub_script(MODULE_REGISTRY_REL_PATH)
+	if scr == null:
+		return null
+	var resolved_bus: RefCounted = log_bus
+	if resolved_bus == null and session != null:
+		resolved_bus = session.get_logger()
+	return scr.new(resolved_bus, session)
+
+
+func create_plugin_sdk(
+	module_id: String,
+	world_builder: WorldBuilder = null
+) -> RefCounted:
+	var clean_id: String = module_id.strip_edges().to_lower()
+	if clean_id.is_empty() or clean_id == "module_registry" or clean_id.contains("..") or clean_id.contains("/") or clean_id.contains("\\"):
+		return null
+	if world_builder != null:
+		return world_builder.get_plugin_sdk(clean_id)
+	var reg: RefCounted = _get_helper_registry()
+	if reg != null:
+		clean_id = str(reg.resolve_module_id(clean_id)).strip_edges().to_lower()
+	if clean_id.is_empty() or clean_id == "module_registry" or clean_id.contains("..") or clean_id.contains("/") or clean_id.contains("\\"):
+		return null
+	if reg != null and (reg.get_module_entry(clean_id) as Dictionary).is_empty():
+		return null
+	var scr: Script = _load_sdk_sub_script("plugins/" + clean_id + ".gd")
+	if scr == null:
+		return null
+	var inst: RefCounted = scr.new()
+	if clean_id == "feature_entity_library" and inst.has_method("set_writer"):
+		inst.set_writer(create_entity_library_writer())
+	return inst
+
+
 func create_session(host: RefCounted, options: Dictionary = {}) -> ImportSession:
-	return ImportSession.new(host, options, create_adapter())
+	return ImportSession.new(host, options, create_adapter(), create_logger())
 
 
 func create_world_builder(
@@ -75,47 +151,77 @@ func create_snappy_codec() -> RefCounted:
 	return scr.new() if scr != null else null
 
 
+## 标量布尔转换：未覆盖自定义适配器时直接委派 utils/value_utils.gd，避免构造完整适配器实例。
 func coerce_bool(value: Variant, fallback: bool = false) -> bool:
-	var adapter: RefCounted = _get_helper_adapter()
-	if adapter != null:
-		return bool(adapter.coerce_bool(value, fallback))
+	if _custom_adapter_override:
+		var adapter: RefCounted = _get_helper_adapter()
+		if adapter != null:
+			return bool(adapter.coerce_bool(value, fallback))
+	var vu: Variant = _value_utils()
+	if vu != null:
+		return bool(vu.coerce_bool(value, fallback, true))
 	if typeof(value) == TYPE_BOOL:
 		return value == true
 	return fallback
 
 
+## 标量字符串转换（严格 TYPE_STRING）。
 func coerce_string(value: Variant, fallback: String = "") -> String:
-	var adapter: RefCounted = _get_helper_adapter()
-	if adapter != null:
-		return str(adapter.coerce_string(value, fallback))
+	if _custom_adapter_override:
+		var adapter: RefCounted = _get_helper_adapter()
+		if adapter != null:
+			return str(adapter.coerce_string(value, fallback))
+	var vu: Variant = _value_utils()
+	if vu != null:
+		return str(vu.coerce_string(value, fallback))
 	if typeof(value) == TYPE_STRING:
 		return value as String
 	return fallback
 
 
+## 标量整数转换（含 64 位溢出拒收与浮点字符串兼容）。
 func coerce_int(value: Variant, fallback: int = 0) -> int:
-	var adapter: RefCounted = _get_helper_adapter()
-	if adapter != null:
-		return int(adapter.coerce_int(value, fallback))
+	if _custom_adapter_override:
+		var adapter: RefCounted = _get_helper_adapter()
+		if adapter != null:
+			return int(adapter.coerce_int(value, fallback))
+	var vu: Variant = _value_utils()
+	if vu != null:
+		return int(vu.coerce_int(value, fallback, true))
 	if typeof(value) == TYPE_INT:
 		return int(value)
 	return fallback
 
 
+## 标量有限浮点数转换。
 func coerce_float(value: Variant, fallback: float = 0.0) -> float:
-	var adapter: RefCounted = _get_helper_adapter()
-	if adapter != null:
-		return float(adapter.coerce_float(value, fallback))
+	if _custom_adapter_override:
+		var adapter: RefCounted = _get_helper_adapter()
+		if adapter != null:
+			return float(adapter.coerce_float(value, fallback))
+	var vu: Variant = _value_utils()
+	if vu != null:
+		return float(vu.coerce_float(value, fallback, true))
 	if typeof(value) == TYPE_INT or typeof(value) == TYPE_FLOAT:
 		var f: float = float(value)
 		return f if is_finite(f) else fallback
 	return fallback
 
 
+func _value_utils() -> Variant:
+	return _load_sdk_sub_script(VALUE_UTILS_REL_PATH)
+
+
 func _get_helper_adapter() -> RefCounted:
 	if _helper_adapter == null:
 		_helper_adapter = create_adapter()
 	return _helper_adapter
+
+
+func _get_helper_registry() -> RefCounted:
+	if _helper_registry == null:
+		_helper_registry = create_module_registry()
+	return _helper_registry
 
 
 func _load_sdk_sub_script(rel_path: String) -> Script:
@@ -148,28 +254,58 @@ func _load_adapter_from_outer_script() -> Script:
 
 class ImportSession extends RefCounted:
 	static var _default_adapter_script: Script = null
+	static var _default_logger_script: Script = null
 
 	var _host: RefCounted = null
 	var _options: Dictionary = {}
 	var _adapter: RefCounted = null
+	var _log_bus: RefCounted = null
 	var _image_cache: Dictionary = {}
 	var _archived_ok_count: int = 0
+	var _util_scripts: Dictionary = {}
 
 	static func set_default_adapter_script(adapter_script: Script) -> void:
 		if adapter_script != null:
 			_default_adapter_script = adapter_script
 
+	static func set_default_logger_script(logger_script: Script) -> void:
+		if logger_script != null:
+			_default_logger_script = logger_script
+
 	func _init(
 		host: RefCounted = null,
 		options: Dictionary = {},
-		adapter: RefCounted = null
+		adapter: RefCounted = null,
+		logger: RefCounted = null
 	) -> void:
 		_host = host
-		_options = options.duplicate(true)
 		_adapter = _resolve_adapter(adapter)
+		if options != null:
+			if _adapter != null and _adapter.has_method("_safe_clone_dict"):
+				_options = _adapter._safe_clone_dict(options)
+			else:
+				var dc: Variant = _load_util_script(DAG_CLONER_REL_PATH)
+				_options = dc.safe_clone_dict(options) if dc != null else options.duplicate(true)
+		else:
+			_options = {}
+		_log_bus = _resolve_logger(logger)
+		if _log_bus != null and _host != null:
+			_log_bus.attach_import_host(_host, false)
 
 	func get_host() -> RefCounted:
 		return _host
+
+	func get_logger() -> RefCounted:
+		if _log_bus == null:
+			_log_bus = _resolve_logger(null)
+			if _log_bus != null and _host != null:
+				_log_bus.attach_import_host(_host, false)
+		return _log_bus
+
+	func set_logger(logger: RefCounted) -> void:
+		_log_bus = logger
+		if _log_bus != null and _host != null:
+			_log_bus.attach_import_host(_host, false)
 
 	func get_options() -> Dictionary:
 		return _options
@@ -183,6 +319,9 @@ class ImportSession extends RefCounted:
 		var raw: Variant = _options[key]
 		if _adapter != null:
 			return bool(_adapter.coerce_bool(raw, fallback))
+		var vu: Variant = _load_util_script(VALUE_UTILS_REL_PATH)
+		if vu != null:
+			return bool(vu.coerce_bool(raw, fallback, true))
 		if typeof(raw) == TYPE_BOOL:
 			return raw == true
 		return fallback
@@ -193,6 +332,9 @@ class ImportSession extends RefCounted:
 		var raw: Variant = _options[key]
 		if _adapter != null:
 			return str(_adapter.coerce_string(raw, fallback))
+		var vu: Variant = _load_util_script(VALUE_UTILS_REL_PATH)
+		if vu != null:
+			return str(vu.coerce_string(raw, fallback))
 		if typeof(raw) == TYPE_STRING:
 			return raw as String
 		return fallback
@@ -203,6 +345,9 @@ class ImportSession extends RefCounted:
 		var raw: Variant = _options[key]
 		if _adapter != null:
 			return int(_adapter.coerce_int(raw, fallback))
+		var vu: Variant = _load_util_script(VALUE_UTILS_REL_PATH)
+		if vu != null:
+			return int(vu.coerce_int(raw, fallback, true))
 		if typeof(raw) == TYPE_INT:
 			return int(raw)
 		return fallback
@@ -213,6 +358,9 @@ class ImportSession extends RefCounted:
 		var raw: Variant = _options[key]
 		if _adapter != null:
 			return float(_adapter.coerce_float(raw, fallback))
+		var vu: Variant = _load_util_script(VALUE_UTILS_REL_PATH)
+		if vu != null:
+			return float(vu.coerce_float(raw, fallback, true))
 		if typeof(raw) == TYPE_INT or typeof(raw) == TYPE_FLOAT:
 			var f: float = float(raw)
 			return f if is_finite(f) else fallback
@@ -221,6 +369,8 @@ class ImportSession extends RefCounted:
 	func sanitize_options(defaults: Dictionary) -> Dictionary:
 		var out: Dictionary = {}
 		for raw_key: Variant in defaults.keys():
+			if not (raw_key is String or raw_key is StringName):
+				continue
 			var key: String = str(raw_key)
 			var def_val: Variant = defaults[raw_key]
 			match typeof(def_val):
@@ -246,7 +396,8 @@ class ImportSession extends RefCounted:
 		if _adapter != null:
 			return bool(_adapter.is_cancelled(_host))
 		if _host != null and _host.has_method("cancelled"):
-			return bool(_host.cancelled())
+			var raw_c: Variant = _host.cancelled()
+			return raw_c == true
 		return false
 
 	func report_progress(message: String) -> void:
@@ -256,10 +407,20 @@ class ImportSession extends RefCounted:
 			_host.report(message)
 
 	func add_warning(message: String) -> void:
+		var clean_msg: String = message
 		if _adapter != null:
-			_adapter.add_warning(_host, message)
+			clean_msg = _adapter.sanitize_text(message)
+		else:
+			var val_u: Variant = _load_util_script(VALIDATION_UTILS_REL_PATH)
+			if val_u != null:
+				clean_msg = str(val_u.strip_leading_bom(message))
+		if _log_bus != null:
+			_log_bus.warn("session", clean_msg)
+			return
+		if _adapter != null:
+			_adapter.add_warning(_host, clean_msg)
 		elif _host != null and _host.has_method("warn"):
-			_host.warn(message)
+			_host.warn(clean_msg)
 
 	func inspect_source(path: String) -> Dictionary:
 		if _adapter != null:
@@ -355,8 +516,15 @@ class ImportSession extends RefCounted:
 			"hidden": 0,
 			"unsupported": 0,
 		}
+		var vu: Variant = _load_util_script(VALUE_UTILS_REL_PATH)
 		for raw_key: Variant in counts_override.keys():
-			counts[str(raw_key)] = int(counts_override[raw_key])
+			if not (raw_key is String or raw_key is StringName):
+				continue
+			var raw_val: Variant = counts_override[raw_key]
+			if vu != null:
+				counts[str(raw_key)] = int(vu.coerce_int(raw_val, 0, true))
+			else:
+				counts[str(raw_key)] = int(raw_val) if typeof(raw_val) == TYPE_INT else 0
 		var final_decoded_bytes: int = decoded_bytes if decoded_bytes >= 0 else source_bytes
 		var unique_images: int = maxi(int(counts.get("images", 0)), remote_assets.size())
 		var clean_name: String = display_name.strip_edges()
@@ -415,12 +583,62 @@ class ImportSession extends RefCounted:
 			return load(DEV_FALLBACK_ADAPTER_PATH) as Script
 		return null
 
+	func _resolve_logger(explicit_logger: RefCounted) -> RefCounted:
+		if explicit_logger != null:
+			return explicit_logger
+		if _default_logger_script != null:
+			return _default_logger_script.new()
+		var discovered := _discover_sub_script(LOG_BUS_REL_PATH)
+		if discovered != null:
+			_default_logger_script = discovered
+			return discovered.new()
+		return null
+
+	func _load_util_script(rel_path: String) -> Variant:
+		if _util_scripts.has(rel_path):
+			return _util_scripts[rel_path]
+		var loaded: Script = _discover_sub_script(rel_path)
+		if loaded != null:
+			_util_scripts[rel_path] = loaded
+		return loaded
+
+	func _discover_sub_script(rel_path: String) -> Script:
+		var inner_scr := get_script() as Script
+		if inner_scr != null and not inner_scr.resource_path.is_empty():
+			var base_path: String = inner_scr.resource_path.split("::")[0].get_base_dir()
+			var candidate: String = base_path.path_join(rel_path)
+			if FileAccess.file_exists(candidate) or ResourceLoader.exists(candidate):
+				return load(candidate) as Script
+
+		var stack_frames: Array = get_stack()
+		for raw_frame: Variant in stack_frames:
+			if raw_frame is Dictionary:
+				var src_file: String = str((raw_frame as Dictionary).get("source", ""))
+				if not src_file.is_empty():
+					var candidate_from_stack: String = src_file.get_base_dir().path_join(rel_path)
+					if FileAccess.file_exists(candidate_from_stack) or ResourceLoader.exists(candidate_from_stack):
+						return load(candidate_from_stack) as Script
+
+		var dev_candidate: String = DEV_FALLBACK_SDK_DIR.path_join(rel_path)
+		if FileAccess.file_exists(dev_candidate) or ResourceLoader.exists(dev_candidate):
+			return load(dev_candidate) as Script
+		return null
+
 
 class WorldBuilder extends RefCounted:
 	static var _default_adapter_script: Script = null
+	static var _default_logger_script: Script = null
+	static var _default_module_registry_script: Script = null
+	static var _default_entity_library_writer_script: Script = null
+	static var _default_sdk_dir: String = ""
 
 	var _adapter: RefCounted = null
 	var _session: ImportSession = null
+	var _log_bus: RefCounted = null
+	var _module_registry: RefCounted = null
+	var _plugin_sdks: Dictionary = {}
+	var _plugin_script_cache: Dictionary = {}
+	var _entity_library_writer: RefCounted = null
 	var _world: Dictionary = {}
 	var _floor_uid: String = ""
 	var _layers: Dictionary = {}
@@ -435,22 +653,68 @@ class WorldBuilder extends RefCounted:
 	var _entity_count: int = 0
 	var _used_sprite_refs: Dictionary = {}
 	var _entity_by_id: Dictionary = {}
+	var _module_config_explicit: bool = false
+	var _util_scripts: Dictionary = {}
 
 	static func set_default_adapter_script(adapter_script: Script) -> void:
 		if adapter_script != null:
 			_default_adapter_script = adapter_script
+
+	static func set_default_logger_script(logger_script: Script) -> void:
+		if logger_script != null:
+			_default_logger_script = logger_script
+
+	static func set_default_module_registry_script(registry_script: Script) -> void:
+		if registry_script != null:
+			_default_module_registry_script = registry_script
+
+	static func set_default_entity_library_writer_script(writer_script: Script) -> void:
+		if writer_script != null:
+			_default_entity_library_writer_script = writer_script
+
+	static func set_default_sdk_dir(sdk_dir: String) -> void:
+		if not sdk_dir.is_empty():
+			_default_sdk_dir = sdk_dir
 
 	func _init(adapter: RefCounted = null) -> void:
 		if adapter != null:
 			_adapter = adapter
 		elif _default_adapter_script != null:
 			_adapter = _default_adapter_script.new()
+		_ensure_logging_and_registry()
+
+	func _world_has_entities() -> bool:
+		if not (_world is Dictionary):
+			return false
+		var es_var: Variant = _world.get("entity_state", null)
+		if es_var is Dictionary:
+			var ents_var: Variant = (es_var as Dictionary).get("entities", null)
+			if ents_var is Array and not (ents_var as Array).is_empty():
+				return true
+		return false
+
+	func register_external_entity(entity: Dictionary) -> void:
+		if entity.is_empty():
+			return
+		var entity_id: String = _as_str(entity.get("id", ""))
+		_entity_count += 1
+		if not entity_id.is_empty():
+			_entity_by_id[entity_id] = entity
+		if _preview_active and _session != null and _adapter != null:
+			_adapter.preview_entity(_session.get_host(), entity, _as_str(entity.get("entity_type", "object"), "object"))
+
+	func get_entity_count() -> int:
+		return _entity_count
 
 	func setup(session: ImportSession, source_units_per_cell: float = 150.0) -> Dictionary:
 		if session == null:
 			_is_ready = false
 			_setup_result = {"ok": false, "reason": "missing_import_session"}
 			return _setup_result
+
+		if _is_ready and (_entity_count > 0 or _world_has_entities()):
+			_warn("WorldBuilder 已包含实体（count=%d），拒绝重复 setup() 覆盖当前世界。" % _entity_count)
+			return {"ok": false, "reason": "world_builder_already_has_entities"}
 
 		# 若通过 sdk.create_world_builder(session, units) 已完成初始化且尚未写入实体，避免重复调用 host.empty_world()
 		if (
@@ -462,6 +726,7 @@ class WorldBuilder extends RefCounted:
 			return _setup_result
 
 		_session = session
+		_sync_session_logging(session)
 		if _adapter == null:
 			_adapter = session.get_adapter()
 		if _adapter == null and _default_adapter_script != null:
@@ -475,7 +740,7 @@ class WorldBuilder extends RefCounted:
 		_source_to_world = _adapter.compute_source_to_world_scale(_source_units_per_cell)
 
 		var world_init: Dictionary = _adapter.init_empty_world(session.get_host())
-		if not bool(world_init.get("ok", false)):
+		if not bool(_adapter.coerce_bool(world_init.get("ok", false), false)):
 			_is_ready = false
 			_setup_result = world_init
 			return _setup_result
@@ -494,6 +759,163 @@ class WorldBuilder extends RefCounted:
 		_is_ready = true
 		_setup_result = {"ok": true}
 		return _setup_result
+
+	func get_adapter() -> RefCounted:
+		return _adapter
+
+	func get_session() -> ImportSession:
+		return _session
+
+	func get_entity(entity_id: String) -> Dictionary:
+		if not _is_ready or entity_id.is_empty():
+			return {}
+		return _lookup_entity(entity_id)
+
+	func get_logger() -> RefCounted:
+		_ensure_logging_and_registry()
+		return _log_bus
+
+	func get_module_registry() -> RefCounted:
+		_ensure_logging_and_registry()
+		return _module_registry
+
+	func set_enabled_modules(ids: Array) -> void:
+		_module_config_explicit = true
+		_ensure_logging_and_registry()
+		if _module_registry != null:
+			_module_registry.set_enabled_modules(ids)
+
+	func set_module_enabled(module_id: String, enabled: bool) -> bool:
+		_module_config_explicit = true
+		_ensure_logging_and_registry()
+		if _module_registry != null:
+			return bool(_module_registry.set_module_enabled(module_id, enabled))
+		return false
+
+	func is_module_enabled(module_id: String) -> bool:
+		_ensure_logging_and_registry()
+		if _module_registry != null:
+			return bool(_module_registry.is_module_enabled(module_id))
+		return false
+
+	func set_disabled_module_policy(policy: String) -> bool:
+		_module_config_explicit = true
+		_ensure_logging_and_registry()
+		if _module_registry != null:
+			return bool(_module_registry.set_disabled_module_policy(policy))
+		return false
+
+	func get_disabled_module_policy() -> String:
+		_ensure_logging_and_registry()
+		if _module_registry != null:
+			return str(_module_registry.get_disabled_module_policy())
+		return "preserve"
+
+	func probe_feature_manager(feature_manager: Variant) -> bool:
+		_module_config_explicit = true
+		_ensure_logging_and_registry()
+		if _module_registry != null:
+			return bool(_module_registry.probe_feature_manager(feature_manager))
+		return false
+
+	func _check_legacy_module_gate(module_id: String, action: String) -> Dictionary:
+		_ensure_logging_and_registry()
+		if _module_registry == null:
+			return {"ok": true, "enabled": true, "explicit": _module_config_explicit}
+		var gate: Dictionary = _module_registry.check_and_warn(module_id, action)
+		gate["explicit"] = _module_config_explicit
+		return gate
+
+	func get_plugin_sdk(module_id: String) -> RefCounted:
+		_ensure_logging_and_registry()
+		var canonical: String = module_id.strip_edges().to_lower()
+		if _module_registry != null:
+			canonical = str(_module_registry.resolve_module_id(canonical)).strip_edges().to_lower()
+		if canonical.is_empty() or canonical == "module_registry" or canonical.contains("..") or canonical.contains("/") or canonical.contains("\\"):
+			return null
+		if _module_registry != null and (_module_registry.get_module_entry(canonical) as Dictionary).is_empty():
+			return null
+		if _plugin_sdks.has(canonical):
+			return _plugin_sdks[canonical] as RefCounted
+		var scr: Script = _discover_plugin_script(canonical)
+		if scr == null:
+			return null
+		var inst: RefCounted = scr.new()
+		if canonical == "feature_entity_library" and inst.has_method("set_writer"):
+			inst.set_writer(_ensure_entity_library_writer())
+		if inst.has_method("configure"):
+			inst.configure(self, _module_registry, _log_bus)
+		_plugin_sdks[canonical] = inst
+		return inst
+
+	func edit_mode() -> RefCounted:
+		return get_plugin_sdk("feature_edit_mode")
+
+	func floor_system() -> RefCounted:
+		return get_plugin_sdk("feature_floor_system")
+
+	func layer_stack() -> RefCounted:
+		return get_plugin_sdk("feature_layer_stack")
+
+	func obstacle_authoring() -> RefCounted:
+		return get_plugin_sdk("feature_obstacle_authoring")
+
+	func entity_library() -> RefCounted:
+		return get_plugin_sdk("feature_entity_library")
+
+	func scene_box() -> RefCounted:
+		return get_plugin_sdk("scene_box")
+
+	func portal() -> RefCounted:
+		return get_plugin_sdk("portal")
+
+	func grid_alignment() -> RefCounted:
+		return get_plugin_sdk("grid_alignment")
+
+	func simple_fog() -> RefCounted:
+		return get_plugin_sdk("simple_fog")
+
+	func image_flip() -> RefCounted:
+		return get_plugin_sdk("image_flip")
+
+	func drag_movement() -> RefCounted:
+		return get_plugin_sdk("drag_movement")
+
+	func drawing() -> RefCounted:
+		return get_plugin_sdk("drawing")
+
+	func areas() -> RefCounted:
+		return get_plugin_sdk("areas")
+
+	func entity_notes() -> RefCounted:
+		return get_plugin_sdk("entity_notes")
+
+	func checklist() -> RefCounted:
+		return get_plugin_sdk("checklist")
+
+	func resource_pool() -> RefCounted:
+		return get_plugin_sdk("resource_pool")
+
+	func character_roster() -> RefCounted:
+		return get_plugin_sdk("character_roster")
+
+	func backpack() -> RefCounted:
+		return get_plugin_sdk("backpack")
+
+	func follow() -> RefCounted:
+		return get_plugin_sdk("follow")
+
+	func candidate_initiative() -> RefCounted:
+		return get_plugin_sdk("candidate_initiative")
+
+	func dice() -> RefCounted:
+		return get_plugin_sdk("dice")
+
+	func campaign_time() -> RefCounted:
+		return get_plugin_sdk("campaign_time")
+
+	func dnd_opportunity() -> RefCounted:
+		return get_plugin_sdk("dnd_opportunity")
 
 	func is_ready() -> bool:
 		return _is_ready
@@ -982,6 +1404,13 @@ class WorldBuilder extends RefCounted:
 	) -> String:
 		if not _is_ready or _adapter == null:
 			return ""
+		if not is_finite(center_src.x) or not is_finite(center_src.y):
+			_warn("障碍物“%s”中心坐标非有限值，已跳过写入。" % [name if not name.is_empty() else source_id])
+			return ""
+		var center_world: Vector2 = center_src * _source_to_world
+		if not is_finite(center_world.x) or not is_finite(center_world.y):
+			_warn("障碍物“%s”中心坐标转换后溢出，已跳过写入。" % [name if not name.is_empty() else source_id])
+			return ""
 		var built: Dictionary = _adapter.make_polygon_obstacle_visual(polygons_src, kind, is_open_door, enabled)
 		var skipped_rings: int = int(built.get("skipped_rings", 0))
 		if skipped_rings > 0:
@@ -1097,6 +1526,16 @@ class WorldBuilder extends RefCounted:
 			or not is_finite(half_width_src)
 		):
 			_warn("障碍物“%s”包含非有限线段坐标，已跳过写入。" % label_hint)
+			return ""
+		var p0_2x: Vector2 = p0_src * 2.0
+		var p1_2x: Vector2 = p1_src * 2.0
+		if (
+			not is_finite(p0_2x.x)
+			or not is_finite(p0_2x.y)
+			or not is_finite(p1_2x.x)
+			or not is_finite(p1_2x.y)
+		):
+			_warn("障碍物“%s”线段坐标超出有限安全范围，已跳过写入。" % label_hint)
 			return ""
 		var center_src: Vector2 = p0_src * 0.5 + p1_src * 0.5
 		if not is_finite(center_src.x) or not is_finite(center_src.y):
@@ -1268,16 +1707,25 @@ class WorldBuilder extends RefCounted:
 		entity_id: String,
 		script_path: String,
 		state: Dictionary = {},
-		parked: bool = false
+		parked: bool = false,
+		manual: bool = false
 	) -> bool:
 		if not _is_ready or _adapter == null or entity_id.is_empty():
 			return false
 		var entity: Dictionary = _lookup_entity(entity_id)
-		var res: Dictionary = _adapter.append_entity_component(entity, script_path, state, parked)
+		var res: Dictionary = _adapter.append_entity_component(entity, script_path, state, parked, manual)
 		if not bool(res.get("ok", false)):
 			_warn("挂载组件失败（%s -> %s）：%s" % [entity_id, script_path, str(res.get("reason", "unknown"))])
 			return false
 		return true
+
+	func attach_parked_component(
+		entity_id: String,
+		script_path: String,
+		state: Dictionary = {},
+		manual: bool = false
+	) -> bool:
+		return attach_component(entity_id, script_path, state, true, manual)
 
 	func suppress_entity_fallback_box(entity_id: String) -> bool:
 		if not _is_ready or _adapter == null or entity_id.is_empty():
@@ -1298,6 +1746,10 @@ class WorldBuilder extends RefCounted:
 	) -> String:
 		if not _is_ready or _adapter == null:
 			return ""
+		var gate: Dictionary = _check_legacy_module_gate("simple_fog", "add_point_light")
+		if not bool(gate.get("ok", true)):
+			return ""
+		var eff_parked: bool = bool(gate.get("explicit", false)) and (not bool(gate.get("enabled", false)))
 		var final_name: String = name if not name.strip_edges().is_empty() else "Light"
 		var entity_id: String = add_object_sprite(
 			source_id,
@@ -1314,18 +1766,28 @@ class WorldBuilder extends RefCounted:
 		if entity_id.is_empty():
 			return ""
 		suppress_entity_fallback_box(entity_id)
-		attach_simple_light(entity_id, radius_world, view_angle_deg, enabled)
+		_attach_simple_light_impl(entity_id, radius_world, view_angle_deg, enabled, eff_parked)
 		return entity_id
 
 	func attach_unit_marker(entity_id: String) -> bool:
-		if not _is_ready or _adapter == null:
+		if not _is_ready or _adapter == null or entity_id.is_empty():
+			return false
+		var entity: Dictionary = _lookup_entity(entity_id)
+		if entity.is_empty():
+			return false
+		if str(entity.get("entity_type", "")) == "map":
+			_warn("无法为地图实体挂载 comp_unit（comp_unit.supports_host 禁止 entity_type == 'map'）：" + entity_id)
 			return false
 		return attach_component(entity_id, _adapter.COMP_UNIT_SCRIPT, _adapter.make_unit_marker_state(), false)
 
 	func attach_portal(entity_id: String, pair_key: String) -> bool:
 		if not _is_ready or _adapter == null:
 			return false
-		return attach_component(entity_id, _adapter.COMP_PORTAL_SCRIPT, _adapter.make_portal_state(pair_key), false)
+		var gate: Dictionary = _check_legacy_module_gate("portal", "attach_portal")
+		if not bool(gate.get("ok", true)):
+			return false
+		var eff_parked: bool = bool(gate.get("explicit", false)) and (not bool(gate.get("enabled", false)))
+		return attach_component(entity_id, _adapter.COMP_PORTAL_SCRIPT, _adapter.make_portal_state(pair_key), eff_parked)
 
 	func attach_simple_vision(
 		entity_id: String,
@@ -1336,8 +1798,12 @@ class WorldBuilder extends RefCounted:
 	) -> bool:
 		if not _is_ready or _adapter == null:
 			return false
+		var gate: Dictionary = _check_legacy_module_gate("simple_fog", "attach_simple_vision")
+		if not bool(gate.get("ok", true)):
+			return false
+		var eff_parked: bool = bool(gate.get("explicit", false)) and (not bool(gate.get("enabled", false)))
 		var state: Dictionary = _adapter.make_simple_vision_state(radius, view_angle_deg, requires_light, enabled)
-		return attach_component(entity_id, _adapter.COMP_SIMPLE_VISION_SCRIPT, state, false)
+		return attach_component(entity_id, _adapter.COMP_SIMPLE_VISION_SCRIPT, state, eff_parked)
 
 	func attach_simple_light(
 		entity_id: String,
@@ -1347,8 +1813,21 @@ class WorldBuilder extends RefCounted:
 	) -> bool:
 		if not _is_ready or _adapter == null:
 			return false
+		var gate: Dictionary = _check_legacy_module_gate("simple_fog", "attach_simple_light")
+		if not bool(gate.get("ok", true)):
+			return false
+		var eff_parked: bool = bool(gate.get("explicit", false)) and (not bool(gate.get("enabled", false)))
+		return _attach_simple_light_impl(entity_id, radius, view_angle_deg, enabled, eff_parked)
+
+	func _attach_simple_light_impl(
+		entity_id: String,
+		radius: float,
+		view_angle_deg: float,
+		enabled: bool,
+		parked: bool
+	) -> bool:
 		var state: Dictionary = _adapter.make_simple_light_state(radius, view_angle_deg, enabled)
-		return attach_component(entity_id, _adapter.COMP_SIMPLE_LIGHT_SCRIPT, state, false)
+		return attach_component(entity_id, _adapter.COMP_SIMPLE_LIGHT_SCRIPT, state, parked)
 
 	func add_scene_box(
 		source_id: String,
@@ -1362,7 +1841,41 @@ class WorldBuilder extends RefCounted:
 		owner_player_ids: Array = [],
 		hidden_from_players: bool = false,
 		locked: bool = false,
-		layer_uid_override: String = ""
+		layer_uid_override: String = "",
+		parked: bool = false,
+		manual: bool = false
+	) -> String:
+		if not _is_ready or _adapter == null:
+			return ""
+		var gate: Dictionary = _check_legacy_module_gate("scene_box", "add_scene_box")
+		if not bool(gate.get("ok", true)):
+			return ""
+		if manual and not parked:
+			_warn("scene_box.add_scene_box: manual=true 必须配合 parked=true 使用。")
+			return ""
+		var eff_parked: bool = parked or (bool(gate.get("explicit", false)) and (not bool(gate.get("enabled", false))))
+		var eff_manual: bool = manual if (parked and manual) else false
+		return _add_scene_box_impl(
+			source_id, name, center_src, target_scene_uid, side_cells, cover_asset,
+			preview_policy, all_players_can_enter, owner_player_ids, hidden_from_players,
+			locked, layer_uid_override, eff_parked, eff_manual
+		)
+
+	func _add_scene_box_impl(
+		source_id: String,
+		name: String,
+		center_src: Vector2,
+		target_scene_uid: String,
+		side_cells: float,
+		cover_asset: String,
+		preview_policy: String,
+		all_players_can_enter: bool,
+		owner_player_ids: Array,
+		hidden_from_players: bool,
+		locked: bool,
+		layer_uid_override: String,
+		parked: bool,
+		manual: bool
 	) -> String:
 		if not _is_ready or _adapter == null:
 			return ""
@@ -1371,7 +1884,13 @@ class WorldBuilder extends RefCounted:
 			_warn("创建场景盒子失败：目标图层为空。")
 			return ""
 		var owner_floor_uid: String = _resolve_floor_for_layer(target_layer)
+		if not is_finite(center_src.x) or not is_finite(center_src.y):
+			_warn("创建场景盒子失败：中心坐标非有限值。")
+			return ""
 		var center_world: Vector2 = to_world_pos(center_src)
+		if not is_finite(center_world.x) or not is_finite(center_world.y):
+			_warn("创建场景盒子失败：中心坐标转换后溢出。")
+			return ""
 		var safe_cells: float = side_cells if is_finite(side_cells) else 1.5
 		var side_world: float = safe_cells * _adapter.WORLD_UNITS_PER_CELL
 		var res: Dictionary = _adapter.append_scene_box_entity(
@@ -1388,7 +1907,11 @@ class WorldBuilder extends RefCounted:
 			all_players_can_enter,
 			owner_player_ids,
 			hidden_from_players,
-			locked
+			locked,
+			0.0,
+			_adapter.DEFAULT_ID_NAMESPACE,
+			parked,
+			manual
 		)
 		if not bool(res.get("ok", false)):
 			_warn("创建场景盒子失败（%s）：%s" % [name if not name.is_empty() else source_id, str(res.get("reason", "unknown"))])
@@ -1413,7 +1936,34 @@ class WorldBuilder extends RefCounted:
 		cover_asset: String = "",
 		preview_policy: String = "visited_unlock",
 		all_players_can_enter: bool = true,
-		owner_player_ids: Array = []
+		owner_player_ids: Array = [],
+		parked: bool = false,
+		manual: bool = false
+	) -> bool:
+		if not _is_ready or _adapter == null or entity_id.is_empty():
+			return false
+		var gate: Dictionary = _check_legacy_module_gate("scene_box", "attach_scene_box")
+		if not bool(gate.get("ok", true)):
+			return false
+		if manual and not parked:
+			_warn("scene_box.attach_scene_box: manual=true 必须配合 parked=true 使用。")
+			return false
+		var eff_parked: bool = parked or (bool(gate.get("explicit", false)) and (not bool(gate.get("enabled", false))))
+		var eff_manual: bool = manual if (parked and manual) else false
+		return _attach_scene_box_impl(
+			entity_id, target_scene_uid, cover_asset, preview_policy,
+			all_players_can_enter, owner_player_ids, eff_parked, eff_manual
+		)
+
+	func _attach_scene_box_impl(
+		entity_id: String,
+		target_scene_uid: String,
+		cover_asset: String,
+		preview_policy: String,
+		all_players_can_enter: bool,
+		owner_player_ids: Array,
+		parked: bool,
+		manual: bool
 	) -> bool:
 		if not _is_ready or _adapter == null or entity_id.is_empty():
 			return false
@@ -1424,7 +1974,9 @@ class WorldBuilder extends RefCounted:
 			cover_asset,
 			preview_policy,
 			all_players_can_enter,
-			owner_player_ids
+			owner_player_ids,
+			parked,
+			manual
 		)
 		if not bool(res.get("ok", false)):
 			_warn("挂载场景盒子组件失败（%s）：%s" % [entity_id, str(res.get("reason", "unknown"))])
@@ -1445,6 +1997,11 @@ class WorldBuilder extends RefCounted:
 			return false
 		return true
 
+	func get_module_state(module_id: String) -> Dictionary:
+		if not _is_ready or _adapter == null:
+			return {}
+		return _adapter.get_module_state(_world, module_id)
+
 	func configure_grid_alignment(
 		cell_size: float = 64.0,
 		snap_enabled: bool = true,
@@ -1454,6 +2011,9 @@ class WorldBuilder extends RefCounted:
 		snap_strength: float = 0.1
 	) -> bool:
 		if not _is_ready or _adapter == null:
+			return false
+		var gate: Dictionary = _check_legacy_module_gate("grid_alignment", "configure_grid_alignment")
+		if not bool(gate.get("ok", true)):
 			return false
 		var state: Dictionary = _adapter.make_grid_alignment_state(
 			cell_size,
@@ -1489,11 +2049,29 @@ class WorldBuilder extends RefCounted:
 		var asset_total: int = maxi(_used_sprite_refs.size(), archived_total)
 		return _adapter.build_prepare_ok(_world, asset_total, source_record_count, merged_wall_count)
 
+	func _value_utils() -> Variant:
+		if _util_scripts.has(VALUE_UTILS_REL_PATH):
+			return _util_scripts[VALUE_UTILS_REL_PATH]
+		var loaded: Script = _discover_sub_script(VALUE_UTILS_REL_PATH)
+		if loaded != null:
+			_util_scripts[VALUE_UTILS_REL_PATH] = loaded
+		return loaded
+
+	func _as_str(value: Variant, fallback: String = "") -> String:
+		var vu: Variant = _value_utils()
+		if vu != null:
+			return str(vu.as_str(value, fallback))
+		if value is String:
+			return value as String
+		if value is StringName:
+			return String(value)
+		return fallback
+
 	func _index_floor_layers(floor_uid: String, layers_map: Dictionary) -> void:
 		if floor_uid.is_empty():
 			return
 		for raw_kind: Variant in layers_map.keys():
-			var uid: String = str(layers_map[raw_kind])
+			var uid: String = _as_str(layers_map[raw_kind])
 			if not uid.is_empty():
 				_layer_to_floor[uid] = floor_uid
 
@@ -1512,7 +2090,7 @@ class WorldBuilder extends RefCounted:
 			if not (raw_floor is Dictionary):
 				continue
 			var fd: Dictionary = raw_floor as Dictionary
-			var fuid: String = str(fd.get("floor_uid", ""))
+			var fuid: String = _as_str(fd.get("floor_uid", ""))
 			if fuid.is_empty():
 				continue
 			var rows_var: Variant = fd.get("layers", [])
@@ -1521,8 +2099,8 @@ class WorldBuilder extends RefCounted:
 				for raw_layer: Variant in rows_var as Array:
 					if raw_layer is Dictionary:
 						var lrow: Dictionary = raw_layer as Dictionary
-						var luid: String = str(lrow.get("layer_uid", ""))
-						var lkind: String = str(lrow.get("kind", ""))
+						var luid: String = _as_str(lrow.get("layer_uid", ""))
+						var lkind: String = _as_str(lrow.get("kind", ""))
 						if not luid.is_empty():
 							_layer_to_floor[luid] = fuid
 							if not lkind.is_empty() and not kind_map.has(lkind):
@@ -1545,6 +2123,98 @@ class WorldBuilder extends RefCounted:
 	func _warn(message: String) -> void:
 		if _session != null:
 			_session.add_warning(message)
+		elif _log_bus != null:
+			_log_bus.warn("world_builder", message)
+
+	func _ensure_logging_and_registry() -> void:
+		if _log_bus == null:
+			if _default_logger_script == null:
+				_default_logger_script = _discover_sub_script(LOG_BUS_REL_PATH)
+			if _default_logger_script != null:
+				_log_bus = _default_logger_script.new()
+		if _module_registry == null:
+			if _default_module_registry_script == null:
+				_default_module_registry_script = _discover_sub_script(MODULE_REGISTRY_REL_PATH)
+			if _default_module_registry_script != null:
+				_module_registry = _default_module_registry_script.new(_log_bus, _session)
+
+	func _sync_session_logging(session: ImportSession) -> void:
+		_ensure_logging_and_registry()
+		if session != null:
+			var sess_bus: RefCounted = session.get_logger()
+			if sess_bus != null:
+				_log_bus = sess_bus
+			elif _log_bus != null:
+				session.set_logger(_log_bus)
+			if _log_bus != null and session.get_host() != null:
+				_log_bus.attach_import_host(session.get_host(), false)
+		if _module_registry != null:
+			_module_registry.configure(_log_bus, _session)
+		_reconfigure_plugin_sdks()
+
+	func _reconfigure_plugin_sdks() -> void:
+		for raw_id: Variant in _plugin_sdks.keys():
+			var inst: Variant = _plugin_sdks[raw_id]
+			if inst is RefCounted and (inst as RefCounted).has_method("configure"):
+				(inst as RefCounted).configure(self, _module_registry, _log_bus)
+
+	func _ensure_entity_library_writer() -> RefCounted:
+		if _entity_library_writer != null:
+			return _entity_library_writer
+		if _default_entity_library_writer_script == null:
+			_default_entity_library_writer_script = _discover_sub_script(ENTITY_LIBRARY_WRITER_REL_PATH)
+		if _default_entity_library_writer_script != null:
+			_entity_library_writer = _default_entity_library_writer_script.new()
+		return _entity_library_writer
+
+	func _discover_plugin_script(canonical_id: String) -> Script:
+		if _plugin_script_cache.has(canonical_id):
+			return _plugin_script_cache[canonical_id] as Script
+		var scr: Script = _discover_sub_script("plugins/" + canonical_id + ".gd")
+		if scr != null:
+			_plugin_script_cache[canonical_id] = scr
+		return scr
+
+	func _load_util_script(rel_path: String) -> Variant:
+		if _util_scripts.has(rel_path):
+			return _util_scripts[rel_path]
+		var loaded: Script = _discover_sub_script(rel_path)
+		if loaded != null:
+			_util_scripts[rel_path] = loaded
+		return loaded
+
+	func _discover_sub_script(rel_path: String) -> Script:
+		var clean_rel: String = rel_path.strip_edges()
+		if clean_rel.is_empty():
+			return null
+		if not _default_sdk_dir.is_empty():
+			var direct: String = _default_sdk_dir.path_join(clean_rel)
+			if FileAccess.file_exists(direct) or ResourceLoader.exists(direct):
+				var loaded_dir := load(direct) as Script
+				if loaded_dir != null:
+					return loaded_dir
+		var inner_scr := get_script() as Script
+		if inner_scr != null and not inner_scr.resource_path.is_empty():
+			var base_path: String = inner_scr.resource_path.split("::")[0].get_base_dir()
+			var candidate: String = base_path.path_join(clean_rel)
+			if FileAccess.file_exists(candidate) or ResourceLoader.exists(candidate):
+				var loaded_inner := load(candidate) as Script
+				if loaded_inner != null:
+					return loaded_inner
+		var stack_frames: Array = get_stack()
+		for raw_frame: Variant in stack_frames:
+			if raw_frame is Dictionary:
+				var src_file: String = str((raw_frame as Dictionary).get("source", ""))
+				if not src_file.is_empty():
+					var candidate_from_stack: String = src_file.get_base_dir().path_join(clean_rel)
+					if FileAccess.file_exists(candidate_from_stack) or ResourceLoader.exists(candidate_from_stack):
+						var loaded_stack := load(candidate_from_stack) as Script
+						if loaded_stack != null:
+							return loaded_stack
+		var dev_candidate: String = DEV_FALLBACK_SDK_DIR.path_join(clean_rel)
+		if FileAccess.file_exists(dev_candidate) or ResourceLoader.exists(dev_candidate):
+			return load(dev_candidate) as Script
+		return null
 
 	func _default_obstacle_label(kind: String, is_open: bool) -> String:
 		match kind:
@@ -1583,11 +2253,9 @@ class WorldBuilder extends RefCounted:
 				label if not label.is_empty() else source_id,
 				str(checked_sprite.get("rejected", sprite_ref)),
 			])
-		var safe_ref: String = str(checked_sprite.get("path", ""))
-		if not safe_ref.is_empty():
-			_used_sprite_refs[safe_ref] = true
+		var safe_ref: String = _as_str(checked_sprite.get("path", ""))
 		var visual: Dictionary = _adapter.make_sprite_visual(safe_ref)
-		return _commit_entity(
+		var entity_id: String = _commit_entity(
 			layer_uid,
 			preview_kind,
 			source_id,
@@ -1603,10 +2271,13 @@ class WorldBuilder extends RefCounted:
 			locked,
 			permission_state
 		)
+		if not entity_id.is_empty() and not safe_ref.is_empty():
+			_used_sprite_refs[safe_ref] = true
+		return entity_id
 
 	func _lookup_entity(entity_id: String) -> Dictionary:
 		var cached: Variant = _entity_by_id.get(entity_id, null)
-		if cached is Dictionary and str((cached as Dictionary).get("id", "")) == entity_id:
+		if cached is Dictionary and _as_str((cached as Dictionary).get("id", "")) == entity_id:
 			return cached as Dictionary
 		if _adapter != null:
 			var found: Dictionary = _adapter.find_entity_by_id(_world, entity_id)
@@ -1653,10 +2324,14 @@ class WorldBuilder extends RefCounted:
 			locked,
 			permission_state
 		)
+		if entity.is_empty():
+			_warn("实体“%s”坐标或属性溢出，已跳过写入。" % [label if not label.is_empty() else source_id])
+			return ""
+		var entity_id: String = _as_str(entity.get("id", ""))
+		if entity_id.is_empty():
+			return ""
 		_entity_count += 1
-		var entity_id: String = str(entity.get("id", ""))
-		if not entity_id.is_empty():
-			_entity_by_id[entity_id] = entity
+		_entity_by_id[entity_id] = entity
 		if _preview_active and _session != null:
 			_adapter.preview_entity(_session.get_host(), entity, preview_kind)
 		return entity_id

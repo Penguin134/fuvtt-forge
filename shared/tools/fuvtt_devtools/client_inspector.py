@@ -26,7 +26,7 @@ PCK_HEADER_FILE_BASE_V4 = 112
 BUILTIN_FOBR_ZIP_REL = "plugin_packages/fobr-world-import.zip"
 BUILD_IDENTITY_REL = "data/build_identity.json"
 
-# Steam / Practice Embedded PCK monitored contract files (v0.0.53 ~ v0.0.60+)
+# Steam / Practice Embedded PCK monitored contract files (v0.0.53 ~ v0.0.62+)
 CONTRACT_WATCH_FILES: tuple[str, ...] = (
     "project.binary",
     "services/plugins/session_plugins.gdc",
@@ -44,6 +44,37 @@ CONTRACT_WATCH_FILES: tuple[str, ...] = (
     "modules/obstacle_authoring/obstacle_shape_data.gdc",
     "modules/scene_box/feature_scene_box.gdc",
     "modules/scene_box/comp_scene_box.gdc",
+    # Host lifecycle / parked / UI-mount / diagnostic contracts
+    "scenes/extension/feature_manager.gdc",
+    "scenes/entities/entity_state_codec.gdc",
+    "scenes/entities/board_token.gdc",
+    "scenes/desktop/layout/desktop_panel_host.gdc",
+    "services/diagnostic_logger.gdc",
+    # v0.0.58 ~ v0.0.62 & M2/M3 native module contracts
+    "modules/simple_fog/fog_config.gdc",
+    "modules/simple_fog/comp_simple_vision.gdc",
+    "modules/simple_fog/comp_simple_light.gdc",
+    "modules/drawing/drawing.gdc",
+    "modules/drawing/text_ink.gdc",
+    "modules/drawing/comp_entity_ink.gdc",
+    "modules/grid_alignment/feature_grid_alignment.gdc",
+    "modules/checklist/checklist.gdc",
+    "modules/backpack/comp_backpack.gdc",
+    "scenes/candidates/resource_pool/feature_resource_pool.gdc",
+    "scenes/candidates/resource_pool/comp_resource_pool.gdc",
+    "modules/character_roster/feature.gdc",
+    "modules/character_roster/comp_character_roster_member.gdc",
+    "modules/campaign_time/feature.gdc",
+    "modules/dnd_opportunity/feature.gdc",
+    "modules/dice/dice_record_contract.gdc",
+    "scenes/candidates/initiative/initiative_state.gdc",
+    "scenes/candidates/initiative/components/comp_initiative.gdc",
+    "modules/portal/comp_portal.gdc",
+    "modules/areas/comp_area.gdc",
+    "modules/drag_movement/comp_drag_speed.gdc",
+    "modules/image_flip/comp_image_flip.gdc",
+    "modules/follow/comp_follow.gdc",
+    "scenes/candidates/entity_notes/comp_entity_note.gdc",
 )
 
 # External non-PCK Steam install files monitored alongside FUS.exe
@@ -69,6 +100,37 @@ GIT_PRACTICE_WATCH_FILES: tuple[str, ...] = (
     "modules/scene_box/feature_scene_box.gd",
     "modules/scene_box/comp_scene_box.gd",
     "plugin_packages/fobr_world_import/plugin.json",
+    # Host lifecycle / parked / UI-mount / diagnostic contracts
+    "scenes/extension/feature_manager.gd",
+    "scenes/entities/entity_state_codec.gd",
+    "scenes/entities/board_token.gd",
+    "scenes/desktop/layout/desktop_panel_host.gd",
+    "services/diagnostic_logger.gd",
+    # v0.0.58 ~ v0.0.62 & M2/M3 native module contracts
+    "modules/simple_fog/fog_config.gd",
+    "modules/simple_fog/comp_simple_vision.gd",
+    "modules/simple_fog/comp_simple_light.gd",
+    "modules/drawing/drawing.gd",
+    "modules/drawing/text_ink.gd",
+    "modules/drawing/comp_entity_ink.gd",
+    "modules/grid_alignment/feature_grid_alignment.gd",
+    "modules/checklist/checklist.gd",
+    "modules/backpack/comp_backpack.gd",
+    "scenes/candidates/resource_pool/feature_resource_pool.gd",
+    "scenes/candidates/resource_pool/comp_resource_pool.gd",
+    "modules/character_roster/feature.gd",
+    "modules/character_roster/comp_character_roster_member.gd",
+    "modules/campaign_time/feature.gd",
+    "modules/dnd_opportunity/feature.gd",
+    "modules/dice/dice_record_contract.gd",
+    "scenes/candidates/initiative/initiative_state.gd",
+    "scenes/candidates/initiative/components/comp_initiative.gd",
+    "modules/portal/comp_portal.gd",
+    "modules/areas/comp_area.gd",
+    "modules/drag_movement/comp_drag_speed.gd",
+    "modules/image_flip/comp_image_flip.gd",
+    "modules/follow/comp_follow.gd",
+    "scenes/candidates/entity_notes/comp_entity_note.gd",
 )
 
 _PROJECT_GODOT_VERSION_RE = re.compile(r'(?m)^config/version="([^"]+)"')
@@ -1022,7 +1084,7 @@ def format_inspection_report(result: InspectionResult, config: WorkspaceConfig |
                 f"  [Git 源码变更] {gchg['path']} ({gchg['change']}): "
                 f"{(gchg['old_sha256'] or 'none')[:12]} -> {(gchg['new_sha256'] or 'none')[:12]}"
             )
-        lines.append("  建议核查 shared/sdk/fu_sdk/adapters/host_v1_adapter.gd 是否需适配新版宿主接口。")
+        lines.append("  建议核查 shared/sdk/fu_sdk/adapters/host_v1_adapter.gd 与 shared/sdk/fu_sdk/plugins/ 是否需适配新版宿主接口。")
 
     try:
         snap_display = result.snapshot_path.relative_to(cfg.workspace_root).as_posix()

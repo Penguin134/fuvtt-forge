@@ -273,6 +273,27 @@ func _resolve_publish_gate(host: RefCounted) -> Dictionary:
 	return {"ok": true, "store": store, "global_root": global_root, "global_dest": global_dest}
 
 
+func _strip_leading_bom(text: String) -> String:
+	var cleaned: String = text
+	while cleaned.begins_with(char(0xfeff)):
+		cleaned = cleaned.substr(1)
+	return cleaned
+
+
+func _safe_str(value: Variant, fallback: String = "") -> String:
+	if value is String or value is StringName:
+		return str(value)
+	return fallback
+
+
+func _first_nonempty_str(dict: Dictionary, keys: Array[String], fallback: String = "") -> String:
+	for k: String in keys:
+		var s: String = _safe_str(dict.get(k, null), "")
+		if not s.is_empty():
+			return s
+	return fallback
+
+
 func _coerce_bool(value: Variant, fallback: bool) -> bool:
 	match typeof(value):
 		TYPE_BOOL:
@@ -281,11 +302,17 @@ func _coerce_bool(value: Variant, fallback: bool) -> bool:
 			return int(value) != 0
 		TYPE_FLOAT:
 			var num: float = float(value)
-			if is_nan(num):
+			if not is_finite(num):
 				return fallback
 			return num != 0.0
-		TYPE_STRING:
-			var normalized: String = str(value).strip_edges().to_lower()
+		TYPE_STRING, TYPE_STRING_NAME:
+			var cleaned: String = str(value)
+			while true:
+				var next_cleaned: String = _strip_leading_bom(cleaned).strip_edges()
+				if next_cleaned == cleaned:
+					break
+				cleaned = next_cleaned
+			var normalized: String = cleaned.to_lower()
 			match normalized:
 				"true", "1", "yes", "on":
 					return true
@@ -4205,10 +4232,13 @@ func _read_bytes_from_source(source: RefCounted, rel_path: String) -> Dictionary
 	if raw_res is Dictionary:
 		var d: Dictionary = raw_res as Dictionary
 		if not bool(d.get("ok", false)):
+			var err_reason: String = _safe_str(d.get("reason", ""), "")
+			if err_reason.is_empty():
+				err_reason = "empty_or_unreadable_asset:" + rel_path
 			return {
 				"ok": false,
 				"data": PackedByteArray(),
-				"reason": str(d.get("reason", "empty_or_unreadable_asset:" + rel_path)),
+				"reason": err_reason,
 			}
 		var payload_v: Variant = d.get("data", PackedByteArray())
 		var payload: PackedByteArray = payload_v as PackedByteArray if (payload_v is PackedByteArray) else PackedByteArray()
@@ -4220,7 +4250,7 @@ func _read_bytes_from_source(source: RefCounted, rel_path: String) -> Dictionary
 		if raw_arr.is_empty():
 			var read_err: String = ""
 			if source.has_method("get_last_read_error"):
-				read_err = str(source.get_last_read_error())
+				read_err = _safe_str(source.get_last_read_error(), "")
 			if read_err.is_empty():
 				read_err = "empty_or_unreadable_asset:" + rel_path
 			return {"ok": false, "data": PackedByteArray(), "reason": read_err}
@@ -4249,7 +4279,7 @@ func prevalidate_local_refs(
 	for ref_v: Variant in logical_refs:
 		if session != null and session.has_method("is_cancelled") and bool(session.is_cancelled()):
 			return
-		var logical_ref: String = str(ref_v)
+		var logical_ref: String = _safe_str(ref_v, "")
 		if logical_ref.strip_edges().is_empty() or seen_refs.has(logical_ref):
 			continue
 		seen_refs[logical_ref] = true
@@ -4258,16 +4288,16 @@ func prevalidate_local_refs(
 		if not (asset_v is Dictionary):
 			continue
 		var asset_entry: Dictionary = asset_v as Dictionary
-		if str(asset_entry.get("kind", "")) != "local":
+		if _safe_str(asset_entry.get("kind", ""), "") != "local":
 			continue
-		if bool(asset_entry.get("unsafe", false)) or bool(asset_entry.get("external_or_missing", false)):
+		if _coerce_bool(asset_entry.get("unsafe", false), false) or _coerce_bool(asset_entry.get("external_or_missing", false), false):
 			continue
-		if asset_entry.has("exists") and not bool(asset_entry.get("exists", true)):
+		if asset_entry.has("exists") and not _coerce_bool(asset_entry.get("exists", true), true):
 			continue
-		var ext: String = str(asset_entry.get("ext", "")).to_lower()
-		if ext == "gif" or bool(asset_entry.get("unsupported_ext", false)):
+		var ext: String = _safe_str(asset_entry.get("ext", ""), "").to_lower()
+		if ext == "gif" or _coerce_bool(asset_entry.get("unsupported_ext", false), false):
 			continue
-		var rel_path: String = str(asset_entry.get("resolved_path_or_url", asset_entry.get("rel_path", "")))
+		var rel_path: String = _first_nonempty_str(asset_entry, ["resolved_path_or_url", "rel_path"], "")
 		if rel_path.is_empty():
 			continue
 
@@ -4393,6 +4423,9 @@ func publish_bytes(
 		var pub_raw: Variant = store.Publish(global_dest, asset_ref, out_bytes)
 		var pub_res: Dictionary = _parse_json_dict(pub_raw)
 		if not bool(pub_res.get("ok", false)):
+			var pub_reason: String = _safe_str(pub_res.get("reason", "unknown"), "unknown")
+			if pub_reason.is_empty():
+				pub_reason = "unknown"
 			return {
 				"ok": false,
 				"sprite_path": "",
@@ -4402,14 +4435,14 @@ func publish_bytes(
 				"height": 0,
 				"converted": false,
 				"unsupported": false,
-				"reason": "shared_asset_publish_failed:" + str(pub_res.get("reason", "unknown")),
+				"reason": "shared_asset_publish_failed:" + pub_reason,
 			}
 		if not existed_before and FileAccess.file_exists(target_file):
 			_published_files.append(target_file)
 
 	var final_ref: String = asset_ref
 	if session != null and session.has_method("validate_sprite_path"):
-		final_ref = str(session.validate_sprite_path(asset_ref))
+		final_ref = _safe_str(session.validate_sprite_path(asset_ref), "")
 		if final_ref.is_empty():
 			return {
 				"ok": false,
@@ -4495,13 +4528,13 @@ func resolve_sprite_ref(
 	var download_remote: bool = _coerce_bool(options.get("download_remote_assets", true), true)
 	var clean_proxy: String = _coerce_string(options.get("proxy", ""), "").strip_edges()
 
-	var kind: String = str(ref_info.get("kind", ""))
+	var kind: String = _safe_str(ref_info.get("kind", ""), "")
 	if kind == "empty":
 		var empty_res: Dictionary = {"ok": true, "sprite_path": "", "status": "skipped", "reason": ""}
 		_ref_cache[ref_str] = empty_res
 		return empty_res.duplicate()
 
-	if kind == "unsafe" or bool(ref_info.get("unsafe", false)):
+	if kind == "unsafe" or _coerce_bool(ref_info.get("unsafe", false), false):
 		if not skip_missing:
 			return {"ok": false, "sprite_path": "", "reason": "unsafe_asset_ref:" + ref_str}
 		var unsafe_res: Dictionary = {"ok": true, "sprite_path": "", "status": "skipped", "reason": ""}
@@ -4509,7 +4542,7 @@ func resolve_sprite_ref(
 		return unsafe_res.duplicate()
 
 	if kind == "remote":
-		var url: String = str(ref_info.get("resolved_path_or_url", ref_info.get("url", ref_str)))
+		var url: String = _first_nonempty_str(ref_info, ["resolved_path_or_url", "url"], ref_str)
 		if not download_remote:
 			if session != null and session.has_method("add_warning"):
 				session.add_warning("已跳过远端图片下载：" + url)
@@ -4518,7 +4551,7 @@ func resolve_sprite_ref(
 			return skip_rem.duplicate()
 		var archived: String = ""
 		if session != null and session.has_method("archive_remote_image"):
-			archived = str(session.archive_remote_image(url, clean_proxy))
+			archived = _safe_str(session.archive_remote_image(url, clean_proxy), "")
 		if not archived.is_empty():
 			var ok_rem: Dictionary = {"ok": true, "sprite_path": archived, "status": "remote_archived", "reason": ""}
 			_ref_cache[ref_str] = ok_rem
@@ -4531,8 +4564,8 @@ func resolve_sprite_ref(
 
 	var is_missing_local: bool = (
 		kind == "system"
-		or bool(ref_info.get("external_or_missing", false))
-		or (kind == "local" and ref_info.has("exists") and not bool(ref_info.get("exists", true)))
+		or _coerce_bool(ref_info.get("external_or_missing", false), false)
+		or (kind == "local" and ref_info.has("exists") and not _coerce_bool(ref_info.get("exists", true), true))
 	)
 	if is_missing_local:
 		if not skip_missing:
@@ -4544,8 +4577,8 @@ func resolve_sprite_ref(
 		return miss_res.duplicate()
 
 	if kind == "local":
-		var ext: String = str(ref_info.get("ext", "")).to_lower()
-		if ext == "gif" or bool(ref_info.get("unsupported_ext", false)):
+		var ext: String = _safe_str(ref_info.get("ext", ""), "").to_lower()
+		if ext == "gif" or _coerce_bool(ref_info.get("unsupported_ext", false), false):
 			if not skip_missing:
 				return {"ok": false, "sprite_path": "", "reason": "unsupported_image_format:gif"}
 			if session != null and session.has_method("add_warning"):
@@ -4561,10 +4594,12 @@ func resolve_sprite_ref(
 			_ref_cache[ref_str] = nosrc_res
 			return nosrc_res.duplicate()
 
-		var rel_path: String = str(ref_info.get("resolved_path_or_url", ref_info.get("rel_path", ref_str)))
+		var rel_path: String = _first_nonempty_str(ref_info, ["resolved_path_or_url", "rel_path"], ref_str)
 		var read_res: Dictionary = _read_bytes_from_source(source, rel_path)
 		if not bool(read_res.get("ok", false)):
-			var read_err: String = str(read_res.get("reason", "empty_or_unreadable_asset:" + ref_str))
+			var read_err: String = _safe_str(read_res.get("reason", ""), "")
+			if read_err.is_empty():
+				read_err = "empty_or_unreadable_asset:" + ref_str
 			if read_err.begins_with("zip_"):
 				return {"ok": false, "sprite_path": "", "reason": read_err}
 			if not skip_missing:
@@ -4582,7 +4617,9 @@ func resolve_sprite_ref(
 			return pub_res.duplicate()
 
 		var is_unsup: bool = bool(pub_res.get("unsupported", false))
-		var reason: String = str(pub_res.get("reason", "invalid_image_asset"))
+		var reason: String = _safe_str(pub_res.get("reason", "invalid_image_asset"), "invalid_image_asset")
+		if reason.is_empty():
+			reason = "invalid_image_asset"
 		if not skip_missing:
 			return {"ok": false, "sprite_path": "", "reason": reason}
 		if session != null and session.has_method("add_warning"):
