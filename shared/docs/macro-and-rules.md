@@ -2,16 +2,16 @@
 
 > [!WARNING]
 > **Playtest 内测阶段免责声明**  
-> 当前处于 Playtest 内测阶段，后续插件与模块接口可能存在变更。本文档基于官方源码库（只读核验）与本地 Steam 客户端及 Playtest `v0.0.57`–`v0.0.62` 更新记录沉淀。  
-> **现役实测验证基准**：`Practice` 主线 `v0.0.60`（Git `origin/codex/playtest-v060-20261122`，Commit `cc3d43a5`，`2026-11-22`）/ Steam Playtest `v0.0.57`–`v0.0.62`（本地端 `v0.0.60`，Commit `cc3d43a`）  
+> 当前处于 Playtest 内测阶段，后续插件与模块接口可能存在变更。本文档基于官方源码库（只读核验）与本地 Steam 客户端及 Playtest `v0.0.57`–`v0.0.65` 更新记录沉淀。  
+> **现役实测验证基准**：`Practice` 主线 `v0.0.65`（Git `origin/codex/v065-unified-20261125`，Commit `468999d4`，`2026-11-25`）/ 向下兼容 `v0.0.57`–`v0.0.62`  
 > **底盘引擎**：`Godot Engine v4.8.beta1.mono.official` (64-bit) + `.NET 10` CoreCLR  
-> **验证日期**：`2026-11-24`
+> **验证日期**：`2026-11-25`
 
 > [!IMPORTANT]
 > **官方仓库双代码线辨析（防止契约混用）**  
 > 官方源码库中并存两条世代相反的代码线：
-> 1. **现役生产主线 `Practice`（`origin/codex/playtest-v060-20261122` / Steam `v0.0.53` → `v0.0.62`）**：基于 Godot `4.8.beta1.mono` + C# `.NET 10` 的新一代重构线，外部插件唯一合法契约为 **`fus.session-plugin.v1`（`host_api = 1`, `scope = "session"`）**；
-> 2. **已替代的早期原型线 `FUS-F2`（远端 `origin/HEAD` 默认分支 `codex/post-dnd-followups`, Commit `ff4a1600`, `2026-10-06`, 回落版本号 `v0.1.80`, Godot `4.8-dev4` 非 Mono）**：早于 `Practice` 线约 1.5 个月，包含 `dnd_sdr`、`f2.feature_plugin.v1` 与 `HostBridge API v7`，**无法在当前 Steam 客户端加载**。  
+> 1. **现役生产主线 `Practice`（`origin/codex/v065-unified-20261125` / Steam `v0.0.53` → `v0.0.65`）**：基于 Godot `4.8.beta1.mono` + C# `.NET 10` 的现役生产主线，外部插件支持三协议：**`fus.session-plugin.v1`**（局外会话导入）、**`fus.desktop-module.v1`**（局内纯本机表现）与 **`fus.plugin.v2`**（局内联机世界模块）；
+> 2. **已替代的早期原型线 `FUS-F2`（远端 `origin/HEAD` 默认分支 `codex/post-dnd-followups`, Commit `ff4a1600`, `2026-10-06`, 回落版本号 `v0.1.80`, Godot `4.8-dev4` 非 Mono）**：早于 `Practice` 线约 1.5 个月，包含 `dnd_sdr`、`f2.feature_plugin.v1` 与 `HostBridge API v7`，**严禁用于现役客户端与生产交付**。  
 > 本文档第 1～5 节 100% 锚定**现役 `Practice` 主线**；第 6 节将旧 `FUS-F2` 线 `dnd_sdr` 的核心设计模式作为前瞻架构参考独立归档。
 
 ---
@@ -189,18 +189,23 @@ def pack_fobr(data: dict, output_path: str) -> None:
 
 ---
 
-## 4. 现役 `Practice` 线内置模块架构与规则数据现状
+## 4. 现役 `Practice` 线内置模块、HookBus 与 `v0.0.65` 扩展开放契约
 
-现役 `Practice` 线彻底采用核心底座与可选模块解耦架构，但**当前所有桌面运行时模块均为受信任的内置模块**（由 `scenes/extension/desktop_feature_catalog.gd` 代码声明，**存档不提供可执行脚本路径**），**尚未对外开放第三方运行时规则插件**。
+现役 `Practice` 线采用“核心底座 + 可选模块”解耦架构。自 `v0.0.65`（`468999d4`）起，客户端在保留 **9 核心 + 26 内置可选**（含 `entity_box`、`avg`、`dnd_character_sheet`、`monster_compendium`、`stat_bubbles`）内置模块的同时，通过 `DesktopFeatureCatalog.set_external_entries()` 正式向第三方开放 **`fus.desktop-module.v1`** 与 **`fus.plugin.v2`** 局内扩展模块。
 
-### 4.1 内置模块清单规模（9 核心 + 21 可选 + 3 候选）与 Playtest 禁用保护
+### 4.1 内置模块清单规模（9 核心 + 26 可选 + 3 候选）、`HookBus` 与三阶段持久化
 
 - **9 项核心底座（不可停用）**：`feature_networking`、`feature_component_sync`、`feature_edit_mode`、`feature_floor_system`、`feature_layer_stack`、`feature_obstacle_authoring`、`feature_debug_hooks`、`feature_component_library`、`feature_entity_library`。
-- **21 项内置可选模块（按战役显式启用，默认关闭）**：`campaign_time`、`image_flip`、`drag_movement`、`drawing`、`areas`、`room_chat`、`checklist`、`player_cursors`、`resource_pool`、`map_fog_editor`、`grid_alignment`、`detached_sidebar`、`character_roster`、`portal`、`backpack`、`dnd_opportunity`、`follow`、`simple_fog`、`dice`、`candidate_initiative`、`scene_box`。
-- **3 项非目录候选模块（`scenes/candidates/`，未列入正式 `DesktopFeatureCatalog`）**：`entity_notes`、`music_board`、`module_example`（另 `CampaignRecord.RETIRED_MODULES` 收录 5 个已退役旧模块 `map`、`movement_blocking`、`vision_fog`、`native_light`、`fog_of_war`）。
-- **Steam Playtest `v0.0.61`–`v0.0.62` 临时禁用（`playtest_blocked`）与旧存档保留**：`DesktopFeatureCatalog`、`module_configuration.gd` 与 `network_module_contract.gd` 支持 `activation_blocked_reason` 门禁。在 Steam Playtest `v0.0.61`–`v0.0.62` 中，`campaign_time` 与 `dnd_opportunity` 被临时屏蔽启用（强制 `enabled = false`），但已有 `world.modules.entries` 数据会由 `FeatureManager` 与 `with_installed_defaults` 不透明保留、不阻断进桌。
-- **SDK 统一管控（`ModuleRegistry` & `LogBus`）**：`shared/sdk/fu_sdk/plugins/module_registry.gd` 完整收录上述 `30+3` 模块并支持 `probe_feature_manager()` 探测；当调用未启用、`playtest_blocked` 或 `uncatalogued_candidate` 模块的分脚本 SDK 时，自动经 `LogBus` 与 `ImportSession.add_warning` 输出包含模块 ID 与策略的警告，并在 `"preserve"`（默认，保留写入/自动停放）与 `"skip"`（跳过写入）间切换。
-- **统一生命周期与状态持久化**：所有可选模块继承 `ExtensionBase`，通过 `prepare_module_state()`（树外预检）、`apply_module_state()` 与 `serialize_module_state()` 将纯数据状态写入 `world.modules`（`v2`）；通过精简版 `ExtensionContext` 登记组件、服务与 UI/网络 Slot（全部冻结 48 个 `HookIds.TABLE` 内部钩子与 `SlotRegistry` 槽位，包括 `ui.desktop_panels`、`ui.mode_bar`、`ui.mode_tools`、`ui.entity_actions`、`ui.canvas_actions`、`ui.sidebar_rail`、`network.actions`/`projections`/`presentations`、`save.readiness`、`debug.actions` 等，暂不对第三方外部脚本开放）。
+- **26 项内置可选模块（按战役显式启用，默认关闭）**：在 `v0.0.60` 的 21 项（`campaign_time`、`image_flip`、`drag_movement`、`drawing`、`areas`、`room_chat`、`checklist`、`player_cursors`、`resource_pool`、`map_fog_editor`、`grid_alignment`、`detached_sidebar`、`character_roster`、`portal`、`backpack`、`dnd_opportunity`、`follow`、`simple_fog`、`dice`、`candidate_initiative`、`scene_box`）基础上，新增 `entity_box`、`avg`、`dnd_character_sheet`、`monster_compendium`、`stat_bubbles` 5 项（其中 `campaign_time` 与 `dnd_opportunity` 在 Playtest 中仍带 `playtest_blocked` 保护且保留旧数据）。
+- **3 项非目录候选模块（`scenes/candidates/`）**：`entity_notes`、`music_board`、`module_example`（另 `CampaignRecord.RETIRED_MODULES` 收录 5 个已退役旧模块 `map`、`movement_blocking`、`vision_fog`、`native_light`、`fog_of_war`）。
+- **SDK 统一管控（`ModuleRegistry` & `LogBus`）**：`shared/sdk/fu_sdk/plugins/module_registry.gd`（同时被 `fu_runtime/` 复用）提供上述模块启用探测与 `"preserve"`/`"skip"` 降级策略。
+- **`HookIds`（61 个内置事件）与自定义命名空间事件（`HookBus`）**：
+  - `scenes/extension/hook_ids.gd` 现包含 **61** 个内置事件（其中 `mode.pre_change`、`input.mouse_button`、`input.mouse_motion`、`input.key` 4 项为 `cancellable: true`）；
+  - 外部模块可通过 `subscribe_hook` 订阅内置事件，或以 `^(ext|mod)\.[a-z0-9_]+(\.[a-z0-9_]+)+$`（`<= 128` 字符、固定 **arity = 1 `Dictionary`**、无循环引用、非 `configuration_is_publishing` 期间）注册并派发自定义命名空间事件。
+- **`WorldModuleState` 三阶段持久化与 `StateValue.is_data()` 校验**：
+  - 局内模块继承 `ExtensionBase`，覆写 `prepare_module_state(state) -> {ok, data|reason}`（树外预检）、`apply_module_state(state) -> bool` 与 `serialize_module_state() -> Dictionary`（另可按需实现鸭子类型可选方法 `persistent_state_revision() -> int`，供 `FeatureManager` 通过 `has_method(&"persistent_state_revision")` 做快照缓存与并发变更校验，并非 `ExtensionBase` 基类方法），写入 `world.modules`（`v2`）；
+  - 所有持久化值必须满足 `StateValue.is_data()`（纯数据递归深度 `<= 32`、有限浮点/向量/颜色/矩阵、禁止 `Object`/`Callable`/`Signal`/`RID`/环路，单条 `<= 16 MiB`、模块总区 `<= 24 MiB`）；
+  - 通过 `ExtensionContext` 向 `SlotRegistry` 注册 `world.overlays`、`ui.*` 与 `network.actions` / `network.projections`（仅 `fus.plugin.v2`）。
 
 ### 4.2 骰子、先攻与区域模块现状
 
@@ -215,10 +220,10 @@ def pack_fobr(data: dict, output_path: str) -> None:
 - **内置 `checklist` 宏规则 DSL（`<FUS_REPO_DIR>/modules/checklist/book.gd`、`rule.gd`）**：
   - `world.modules.entries["checklist"]` 宿主端支持 `schema` 取值 `[1, 2]`（`LIMIT = 128`、受众 `"all" | "player" | "gm"`）。宿主 `Book.validate()` / `Book.restore()`（`book.gd:51-57, 185-197`）对所有非空 `row.source` 无条件调用 `Rule.parse(row.source)`（`rule.gd:86-116`），**宿主运行时仅接受空串 `""` 或合法 `on <事件名>:` DSL 宏，在 `Book.restore()` 时会拒绝 `"mod:..."` 等非宏来源标签**。
   - `shared/sdk/fu_sdk/plugins/checklist.gd`（`MAX_ROWS = 128`、`_is_mod_source_tag`）仅在 **SDK 校验侧** 额外放行 `^mod:[A-Za-z0-9_.:-]+$` 来源标签以供离线导入归档溯源（若目标存档需供实机宿主已启用的 `checklist` 模块加载恢复，调用方仍须将 `source` 留空 `""` 或填写合法 `on <事件名>:` 宏）。
-  - 内置规则解析器支持 **13 个宿主事件**（`entity.motion_committed`、`camera.navigated`、`mode.changed`、`selection.changed`、`comp.added`、`comp.removed`、`comp.state_changed`、`drawing.stroke_committed`、`ui.panel_opened`、`entity.spawned`、`floor.changed`、`module.toggled`、`portal.teleported`）、比较算子（`==`/`!=`/`>=`）、逻辑连接（`and`/`or`）、`return`、`task.complete_once()` 与 7 套内置模板；**仍不向外部脚本开放任意 GDScript 宏执行或 `HookIds.TABLE`（48 个冻结钩子）自定义注册**。
-- **`v0.0.58`–`v0.0.62` 原生玩法模块契约与独立 SDK 覆盖（`shared/sdk/fu_sdk/plugins/*.gd`）**：
-  - `resource_pool`（`v1` 定义 + `comp_resource_pool.gd`）、`character_roster`（`v1` + 仅限活体 `unit` 的 `comp_character_roster_member.gd`）、`backpack`（`comp_backpack.gd` 16 槽位 `"0".."15"`、`MAX_STACK = 999`、`MAX_ITEM_BYTES = 8192`）、`follow`（`comp_follow.gd` 循环依赖检测）、`drawing`（`v1` 含 `v0.0.61` `text_ink.gd` `Transform2D` `affine` 与 `["sans", "zhuokai"]` `12..256` px 文字图元）、`campaign_time`（`v1` 时间源与效果状态）、`dnd_opportunity`（`v1` 支持 `2014` / `2024` 版式卡片）；
-  - 现役客户端**仍未向外部插件开放第三方运行时规则插件、外部宏执行引擎或运行时 UI/Action Slot 注入**；外部扩展唯一受支持路径为符合 **`fus.session-plugin.v1`（`host_api = 1`, `scope = "session"`）** 的离线导入插件（参考独立控制台日志插件 `mods/sdk-log-console/` 与 `shared/docs/plugin-lifecycle.md`）。若需构建合规的多场景、玩法模块数据或全局素材库，请直接使用 `fu_sdk`（`v1.3.0`，含 `LogBus`、`ModuleRegistry`、23 个独立 `plugins/<module_id>.gd` 与 `modules/entity_library_writer.gd`）。
+  - 内置规则解析器支持 **13 个宿主事件**（`entity.motion_committed`、`camera.navigated`、`mode.changed`、`selection.changed`、`comp.added`、`comp.removed`、`comp.state_changed`、`drawing.stroke_committed`、`ui.panel_opened`、`entity.spawned`、`floor.changed`、`module.toggled`、`portal.teleported`）、比较算子（`==`/`!=`/`>=`）、逻辑连接（`and`/`or`）、`return`、`task.complete_once()` 与 7 套内置模板（`checklist` DSL 本身不执行任意外部 GDScript 宏；局内交互逻辑请使用 `fus.desktop-module.v1` / `fus.plugin.v2` 订阅 `HookBus` 61 个内置事件或 `ext.*`/`mod.*` 自定义事件）。
+- **`v0.0.58`–`v0.0.65` 原生玩法模块契约与双模 SDK 覆盖**：
+  - 局外导入（`shared/sdk/fu_sdk/plugins/*.gd`）：完整覆盖 `resource_pool`、`character_roster`、`backpack`、`follow`、`drawing`（含 `text_ink.gd`）、`campaign_time`、`dnd_opportunity` 等 23 个原生分脚本与 `modules/entity_library_writer.gd`；
+  - 局内实时与联机扩展（`shared/sdk/fu_runtime/v2.gd`）：使用 `fus.desktop-module.v1`（纯 `.zip`，`desktop_api` + `HookBus` + `world.overlays`）或 `fus.plugin.v2`（`.fup` + `content.pck`，`CompBase` + `EntityComponentPage` + `WorldModuleState` + `network.actions`/`network.projections` + UI 槽位），详见 `shared/docs/plugin-lifecycle.md` 与 `shared/docs/desktop-and-scene-api.md`。
 
 ### 4.4 `EntityLibraryStore` 素材库集成契约（`<root>/entity-library/`）
 
@@ -240,7 +245,7 @@ def pack_fobr(data: dict, output_path: str) -> None:
 
 ### 4.5 `world.modules` 渐进式 `16 MiB / 24 MiB / 30 MiB` 体积裁剪模式
 
-在现役 `Practice` 尚未向第三方规则插件开放运行时的阶段，外部导入器可将完整 TRPG 属性块（AC、HP、CR/等级、属性调整值、速度、感官、传记等）写入 `world.modules.entries["<plugin_id>"]`（纯数据字典，需剔除 `NaN`/`Inf` 及超过 32 层的嵌套）。面对大型战役（数百名带 HTML 长传记的 NPC/PC），应采用**三级渐进预算裁剪**（结合 `world_module_state.gd` `_bounded()` 估算与 `var_to_bytes()`，校验单条目 `<= 16 MiB`、`world.modules <= 24 MiB` 与整包 `world <= 30 MiB`，也可直接调用 `fu_sdk v1.3.0` 的 `WorldBuilder.can_fit_module_state()`）：
+对于纯离线导入插件（`fus.session-plugin.v1`，不依赖自定义局内规则运行时），外部导入器可将完整 TRPG 属性块（AC、HP、CR/等级、属性调整值、速度、感官、传记等）写入 `world.modules.entries["<plugin_id>"]`（纯数据字典，需剔除 `NaN`/`Inf` 及超过 32 层的嵌套；若搭配 `fus.plugin.v2` / `fus.desktop-module.v1` 局内模块，还可分别通过 `ExtensionBase` 三阶段持久化接管或 `desktop_api.read_saved_module_entry()` 只读消费）。面对大型战役（数百名带 HTML 长传记的 NPC/PC），应采用**三级渐进预算裁剪**（结合 `world_module_state.gd` `_bounded()` 估算与 `var_to_bytes()`，校验单条目 `<= 16 MiB`、`world.modules <= 24 MiB` 与整包 `world <= 30 MiB`，也可直接调用 `fu_sdk v1.3.0` 的 `WorldBuilder.can_fit_module_state()`）：
 
 1. **Level 0（完整档案）**：剥离 HTML 标签并按单条上限截断传记（如 `<= 2048` 字符），保留完整属性与扩展摘要；
 2. **Level 1（裁剪传记）**：清空所有角色/怪物的 `biography` 长文本，保留核心数值与结构化摘要，并记 `session.add_warning()`；
@@ -254,7 +259,7 @@ def pack_fobr(data: dict, output_path: str) -> None:
 1. **宿主上下文注入**：`ImportBridge` 调用 `entry.gd` 的 `inspect_import(path, options, host)` 与 `prepare_import(path, options, host)` 时注入受控的 `host: RefCounted` 实例。
 2. **后台线程与取消响应**：导入运行于 Godot `WorkerThreadPool` 后台线程，脚本不得直接操作场景树节点，且必须在循环中周期性检查 `host.cancelled()` 并优雅退出，避免资源悬挂。
 3. **两阶段预览规范**：推荐先提交墙体/门窗等几何实体并调用 `host.finish_geometry_preview()`，再逐一调用 `host.archive_image(url, proxy)` 下载/归档重型图片素材，确保预览画布第一时间呈现结构轮廓。
-4. **C# 强校验与沙箱边界**：所有外部插件包在安装与读取期均经 `Practice.PluginPackageJob` 强制校验（`schema == "fus.session-plugin.v1"`、`host_api == 1`、`scope == "session"`、`settings <= 32`、`import_extensions <= 8`、ZIP 条目 `2..1000`、解压上限 `256 MiB`、逐文件 `file_hashes` SHA-256 校验）；严禁直接写入工作区/受控 `FUS_Data/` 之外的系统路径，且 `comp_visual.sprite_path` 严禁写入 `user://` 路径。
+4. **C# 强校验与沙箱边界**：所有外部插件包在安装与读取期均经 `Practice.PluginPackageJob` 强制校验（`fus.session-plugin.v1`、`fus.desktop-module.v1`、`fus.plugin.v2` 三协议对应字段、禁用二进制与局内 `class_name` 拦截、归档条目 `2..1000`、解压上限 `256 MiB`、逐文件 `file_hashes` 与 `SHA256SUMS.txt` 校验）；严禁直接写入工作区/受控 `FUS_Data/` 之外的系统路径，且 `comp_visual.sprite_path` 严禁写入 `user://` 路径。
 
 ---
 
@@ -262,7 +267,7 @@ def pack_fobr(data: dict, output_path: str) -> None:
 
 > [!CAUTION]
 > **严禁用于当前 Steam `Practice` 客户端！**  
-> 本节内容源自已被替代的早期原型线 `FUS-F2`（`codex/post-dnd-followups`, Commit `ff4a1600`, `v0.1.80`, `plugin_packages/dnd_sdr` `v0.2.0-test.33`）。其清单格式 `f2.feature_plugin.v1`、逻辑资源桥 `HostBridge API v7` 及全部运行时 Provider 钩子在现役 `Practice` 客户端（`v0.0.60`）中**均不存在**，切勿直接编写依赖这些接口的生产插件。本节仅提炼官方曾验证过的规则插件架构范式，供未来 `Practice` 主线开放第三方规则插件时作为前瞻设计参考。
+> 本节内容源自已被替代的早期原型线 `FUS-F2`（`codex/post-dnd-followups`, Commit `ff4a1600`, `v0.1.80`, `plugin_packages/dnd_sdr` `v0.2.0-test.33`）。其清单格式 `f2.feature_plugin.v1`、逻辑资源桥 `HostBridge API v7` 及全部旧版 Provider 钩子在现役 `Practice` 客户端（`v0.0.65`）中**均不存在**，切勿混入生产插件（局内插件请统一使用现役 `fus.desktop-module.v1` 或 `fus.plugin.v2`）。本节仅保留 `dnd_sdr` 规则抽象设计范式供参考。
 
 ### 6.1 统一角色卡 / 怪物数据模型与 `{base, auto, override}` 三元组
 - 角色卡（`CompDndSDRCharacterCard`）与怪物（`CompDndSDRMonsterData`）共享 `SCHEMA_VERSION = 2` 统一结构，可派生数值（属性、调整值、豁免、AC、先攻、法术 DC 等）一律存为 **`{base, auto, override}`** 三元组，解析优先级严格固定为 `override > auto > base`——既保留导入原值 `base`、支持自动规则计算写入 `auto`，又允许玩家或 DM 手工覆写 `override` 而不破坏底层数据。

@@ -1,0 +1,46 @@
+{
+  "schema": "fus.plugin.v2",
+  "host_api": 2,
+  "scope": "world",
+  "id": "template_world_plugin",
+  "version": "0.1.0",
+  "name": "Template World Plugin",
+  "description": "外置世界模块插件模板（fus.plugin.v2 / .fup + content.pck）：基于 fu_runtime SDK 实现 CompBase 可选实体组件与 public_state 披露、EntityComponentPage 撤销编辑、WorldModuleState 三阶段持久化、network.actions / network.projections 联机同步与全量桌面 UI/模式/覆盖层槽位。",
+  "pack_file": "content.pck",
+  "modules": [
+    {
+      "id": "template_world_plugin.core",
+      "display_name": "Template World Plugin",
+      "entry_scene": "res://external_modules/template_world_plugin/feature_template_world_plugin.tscn",
+      "version": 1,
+      "network_version": 1,
+      "local_only": false,
+      "isolated_lifecycle": true,
+      "probe_before_network_enable": false,
+      "requires": [
+        "feature_edit_mode",
+        "feature_component_sync",
+        "feature_component_library"
+      ],
+      "conflicts": [],
+      "suppresses": [],
+      "description": "外置世界模块模板：为单位提供可联机同步、可暗藏、支持撤销重做的战术标记组件及侧栏总览、设置页、检视模式与动作轮盘。",
+      "disable_effect": "撤回世界标记渲染层、侧栏总览、设置页、检视模式与实体动作，原位停放保留实体上的组件配置数据。"
+    }
+  ],
+  "settings": [
+    {
+      "id": "default_range_cells",
+      "type": "string",
+      "label": "默认标记格距",
+      "placeholder": "2",
+      "default": "2"
+    },
+    {
+      "id": "show_labels",
+      "type": "bool",
+      "label": "显示标记文字标签",
+      "default": true
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://external_modules/template_world_plugin/marker_sidebar_panel.gd" id="1_panel"]
+
+[node name="MarkerSidebarPanel" type="PanelContainer"]
+script = ExtResource("1_panel")
+
+[node name="Padding" type="MarginContainer" parent="."]
+layout_mode = 2
+theme_override_constants/margin_left = 12
+theme_override_constants/margin_top = 12
+theme_override_constants/margin_right = 12
+theme_override_constants/margin_bottom = 12
+
+[node name="Column" type="VBoxContainer" parent="Padding"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="Heading" type="Label" parent="Padding/Column"]
+layout_mode = 2
+text = "战术标记总览"
+
+[node name="SummaryLabel" type="Label" parent="Padding/Column"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "当前楼层标记数：0"
+
+[node name="MarkerList" type="VBoxContainer" parent="Padding/Column"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_constants/separation = 4

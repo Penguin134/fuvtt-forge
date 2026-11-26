@@ -10,11 +10,15 @@ import os
 from pathlib import Path
 import re
 import shutil
+import struct
 import subprocess
 import sys
+import threading
 import time
 import unittest
 from unittest import mock
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 import uuid
 import zipfile
 
@@ -29,18 +33,22 @@ import fuvtt_cli  # noqa: E402
 from fuvtt_devtools.client_inspector import (  # noqa: E402
     CONTRACT_WATCH_FILES,
     GIT_PRACTICE_WATCH_FILES,
+    PckFormatError,
     STEAM_EXTERNAL_PRACTICE_DLL_REL,
     STEAM_EXTERNAL_STORAGE_JSON_REL,
     build_synthetic_embedded_pck_exe,
+    extract_embedded_pck,
     format_inspection_report,
     inspect_client,
     parse_embedded_pck,
+    parse_embedded_pck_stream,
 )
 from fuvtt_devtools.deployer import (  # noqa: E402
     DeployError,
     build_reconciled_settings,
     compute_directory_file_hashes,
     compute_zip_file_hashes,
+    create_dev_http_server,
     discover_built_packages,
     format_serve_banner,
     merge_registry_plugin_entry,
@@ -58,6 +66,7 @@ from fuvtt_devtools.env_config import (  # noqa: E402
     redact_path,
 )
 from fuvtt_devtools.host_verifier import (  # noqa: E402
+    _write_synthetic_sample,
     analyze_godot_logs,
     prepare_probe_workspace,
     verify_mod_with_host,
@@ -465,12 +474,16 @@ class ValidatorTests(BaseDevtoolsTestCase):
         ok_report = validate_mod_dir(res.target_dir, mod_name="subentry-mod")
         self.assertTrue(ok_report.ok, msg=str(ok_report.errors))
 
-        # Invalid entry characters rejected
-        manifest["entry"] = "src/bad entry!.gd"
-        res.manifest_path.write_bytes(json.dumps(manifest, indent=2).encode("utf-8"))
-        bad_entry_report = validate_mod_dir(res.target_dir, mod_name="subentry-mod")
-        self.assertFalse(bad_entry_report.ok)
-        self.assertTrue(any("invalid_plugin_entry" in e for e in bad_entry_report.errors))
+        # Invalid entry characters & whitespace-only/padded entry rejected (PluginPackageJob parity)
+        for bad_entry in ("src/bad entry!.gd", "   ", " entry.gd "):
+            manifest["entry"] = bad_entry
+            res.manifest_path.write_bytes(json.dumps(manifest, indent=2).encode("utf-8"))
+            bad_entry_report = validate_mod_dir(res.target_dir, mod_name="subentry-mod")
+            self.assertFalse(bad_entry_report.ok, msg=f"Expected rejection for entry={bad_entry!r}")
+            self.assertTrue(
+                any("invalid_plugin_entry" in e for e in bad_entry_report.errors),
+                msg=f"Missing invalid_plugin_entry for entry={bad_entry!r}: {bad_entry_report.errors}",
+            )
 
         # Oversized plugin.json (> 128 KiB) rejected
         manifest["entry"] = "src/main_entry.gd"
@@ -1215,6 +1228,72 @@ class HostVerifierTests(BaseDevtoolsTestCase):
         self.assertFalse(fail_res.ok)
         self.assertEqual(len(fail_res.log_errors), 1)
 
+    def test_prepare_probe_workspace_synthetic_samples_for_zip_fup_and_text_extensions(self) -> None:
+        scaffold_mod("probe-zip-demo", config=self.cfg, import_extensions=["zip", "json"])
+        zip_art = build_mod("probe-zip-demo", config=self.cfg)
+        zip_ev = self.cfg.build_dir / "probe-zip-demo" / "verify_evidence" / "unit_zip"
+        zip_paths = prepare_probe_workspace(
+            zip_path=zip_art.zip_path,
+            plugin_manifest=zip_art.plugin_manifest,
+            evidence_dir=zip_ev,
+        )
+        self.assertEqual(zip_paths["sample"].name, "synthetic_sample.zip")
+        self.assertTrue(zipfile.is_zipfile(zip_paths["sample"]))
+        with zipfile.ZipFile(zip_paths["sample"], "r") as zf:
+            names = set(zf.namelist())
+            self.assertTrue({"world.json", "data/scenes.db", "data/actors.db", "sample.json"}.issubset(names))
+            world_data = json.loads(zf.read("world.json").decode("utf-8"))
+            self.assertTrue(world_data.get("fu_vtt_verify_host_sample"))
+            self.assertEqual(world_data.get("id"), "verify_host_sample")
+            self.assertEqual(world_data.get("name"), "verify_host_sample")
+            self.assertEqual(world_data.get("system"), "dnd5e")
+            self.assertEqual(zf.read("data/scenes.db"), b"")
+            self.assertEqual(zf.read("data/actors.db"), b"")
+            self.assertEqual(json.loads(zf.read("sample.json").decode("utf-8")), {"fu_vtt_verify_host_sample": True})
+
+        scaffold_mod("probe-fup-demo", config=self.cfg, import_extensions=["fup"])
+        fup_art = build_mod("probe-fup-demo", config=self.cfg)
+        fup_ev = self.cfg.build_dir / "probe-fup-demo" / "verify_evidence" / "unit_fup"
+        fup_paths = prepare_probe_workspace(
+            zip_path=fup_art.zip_path,
+            plugin_manifest=fup_art.plugin_manifest,
+            evidence_dir=fup_ev,
+        )
+        self.assertEqual(fup_paths["sample"].name, "synthetic_sample.fup")
+        self.assertTrue(zipfile.is_zipfile(fup_paths["sample"]))
+        with zipfile.ZipFile(fup_paths["sample"], "r") as zf:
+            self.assertTrue({"plugin.json", "sample.json"}.issubset(set(zf.namelist())))
+            fup_manifest = json.loads(zf.read("plugin.json").decode("utf-8"))
+            self.assertEqual(fup_manifest.get("schema"), "fus.session-plugin.v1")
+            self.assertEqual(fup_manifest.get("id"), "synthetic_sample")
+            self.assertEqual(json.loads(zf.read("sample.json").decode("utf-8")), {"fu_vtt_verify_host_sample": True})
+
+        scaffold_mod("probe-json-demo", config=self.cfg, import_extensions=["json", "log"])
+        json_art = build_mod("probe-json-demo", config=self.cfg)
+        json_ev = self.cfg.build_dir / "probe-json-demo" / "verify_evidence" / "unit_json"
+        json_paths = prepare_probe_workspace(
+            zip_path=json_art.zip_path,
+            plugin_manifest=json_art.plugin_manifest,
+            evidence_dir=json_ev,
+        )
+        self.assertEqual(json_paths["sample"].name, "synthetic_sample.json")
+        self.assertFalse(zipfile.is_zipfile(json_paths["sample"]))
+        self.assertEqual(json.loads(json_paths["sample"].read_text(encoding="utf-8")), {"fu_vtt_verify_host_sample": True})
+
+        fvtt_json_ev = self.cfg.build_dir / "probe-json-demo" / "verify_evidence" / "unit_fvtt_json"
+        fvtt_json_paths = prepare_probe_workspace(
+            zip_path=json_art.zip_path,
+            plugin_manifest={"id": "fvtt_world_importer", "import_extensions": ["json", "zip"]},
+            evidence_dir=fvtt_json_ev,
+        )
+        self.assertEqual(fvtt_json_paths["sample"].name, "world.json")
+        self.assertTrue((fvtt_json_paths["sample"].parent / "data" / "scenes.db").is_file())
+        self.assertTrue((fvtt_json_paths["sample"].parent / "data" / "actors.db").is_file())
+        self.assertEqual(
+            json.loads(fvtt_json_paths["sample"].read_text(encoding="utf-8")).get("id"),
+            "verify_host_sample",
+        )
+
     def test_real_godot_verify_host_on_workspace_template_if_available(self) -> None:
         real_cfg = load_config(WORKSPACE_ROOT)
         if real_cfg.godot_bin is None or not real_cfg.godot_bin.is_file():
@@ -1715,6 +1794,189 @@ func prepare_import(_path: String, _options: Dictionary, _host: RefCounted) -> D
         self.assertIn("world.modules.entries.size() <= 128", joined_fail)
         self.assertIn("valid module_id", joined_fail)
         self.assertIn(".version is int >= 1", joined_fail)
+
+    def test_v1_semicolon_class_name_bypass_rejected_everywhere(self) -> None:
+        """C4 / Bug 4: Catch `extends RefCounted; class_name Evil` across v1 validator, packager, archive, and host."""
+        mod = scaffold_mod("v1-semi", config=self.cfg, import_extensions=["uvtt"])
+        clean_entry = mod.entry_path.read_bytes()
+        mod.entry_path.write_bytes(
+            (
+                "extends RefCounted; class_name EvilV1Global\n"
+                "func inspect_import(_p: String, _o: Dictionary, _h: Object) -> Dictionary:\n"
+                '\treturn {"ok": true}\n'
+                "func prepare_import(_p: String, _o: Dictionary, _h: Object) -> Dictionary:\n"
+                '\treturn {"ok": true}\n'
+            ).encode("utf-8")
+        )
+        rep = validate_mod_dir(mod.target_dir, sdk_dir=self.cfg.sdk_dir)
+        self.assertFalse(rep.ok)
+        self.assertTrue(any("class_name" in e for e in rep.errors), msg=rep.errors)
+
+        with self.assertRaises(PackageError):
+            build_mod("v1-semi", config=self.cfg)
+
+        bad_zip = self.case_dir / "v1_semi.zip"
+        bad_zip.write_bytes(_make_mock_fobr_zip(entry_body="extends RefCounted; class_name EvilZipGlobal\n"))
+        z_errs = validate_zip_archive(bad_zip)
+        self.assertTrue(any("class_name" in e for e in z_errs), msg=z_errs)
+
+        # Also test headless probe get_global_name() / semicolon catch via tampered built .zip if GODOT_BIN available
+        real_cfg = load_config(WORKSPACE_ROOT)
+        if real_cfg.godot_bin is not None and real_cfg.godot_bin.is_file():
+            try:
+                probe = subprocess.run(
+                    [str(real_cfg.godot_bin), "--headless", "--quit", "--version"],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+            except OSError:
+                probe = None
+            if probe is not None and probe.returncode == 0:
+                iso_cfg = WorkspaceConfig(
+                    workspace_root=WORKSPACE_ROOT.resolve(),
+                    mods_dir=self.cfg.mods_dir,
+                    sdk_dir=WORKSPACE_ROOT / "shared" / "sdk" / "fu_sdk",
+                    build_dir=self.cfg.build_dir,
+                    cache_dir=self.cfg.cache_dir,
+                    godot_bin=real_cfg.godot_bin,
+                )
+                mod.entry_path.write_bytes(clean_entry)
+                art = build_mod("v1-semi", config=iso_cfg)
+                with zipfile.ZipFile(art.zip_path, "r") as zin:
+                    entries = [(info.filename, zin.read(info.filename)) for info in zin.infolist()]
+                with zipfile.ZipFile(art.zip_path, "w") as zout:
+                    for fname, data in entries:
+                        if fname == "entry.gd":
+                            data = (
+                                b"extends RefCounted; class_name EvilHostGlobal\n"
+                                b"func inspect_import(_p: String, _o: Dictionary, _h: Object) -> Dictionary:\n"
+                                b'\treturn {"ok": true}\n'
+                                b"func prepare_import(_p: String, _o: Dictionary, _h: Object) -> Dictionary:\n"
+                                b'\treturn {"ok": true}\n'
+                            )
+                        zout.writestr(fname, data)
+                future_ts = time.time() + 10
+                os.utime(art.zip_path, (future_ts, future_ts))
+                bm_path = self.cfg.build_dir / "v1-semi" / "build-manifest.json"
+                bm = json.loads(bm_path.read_text(encoding="utf-8"))
+                bm["sha256"] = hashlib.sha256(art.zip_path.read_bytes()).hexdigest()
+                bm_path.write_text(json.dumps(bm, indent=2) + "\n", encoding="utf-8")
+                os.utime(bm_path, (future_ts, future_ts))
+                vres = verify_mod_with_host("v1-semi", config=iso_cfg)
+                self.assertFalse(vres.ok)
+                self.assertTrue(any("class_name" in f for f in vres.failures), msg=vres.failures)
+
+    def test_write_synthetic_sample_strips_leading_dots(self) -> None:
+        """Bug 10: Leading dot in import_extensions must not produce `synthetic_sample..uvtt`."""
+        sample_path = _write_synthetic_sample(self.case_dir, {"id": "dot_ext", "import_extensions": [".uvtt"]})
+        self.assertEqual(sample_path.name, "synthetic_sample.uvtt")
+        self.assertTrue(sample_path.is_file())
+        fallback_path = _write_synthetic_sample(self.case_dir, {"id": "empty_ext", "import_extensions": ["..."]})
+        self.assertEqual(fallback_path.name, "synthetic_sample.fusdemo")
+
+    def test_deployer_zip_file_dir_collision_and_http_adversarial_requests(self) -> None:
+        """C6 / Bug 8: safe_extract_zip converts file/dir collisions to DeployError; HTTP server rejects traversal and POST."""
+        # Case A: file 'sub' collides with directory 'sub/a.txt'
+        buf_a = io.BytesIO()
+        with zipfile.ZipFile(buf_a, "w") as zf:
+            zf.writestr("sub", b"file-first")
+            zf.writestr("sub/a.txt", b"nested-second")
+        zip_a = self.case_dir / "coll_a.zip"
+        zip_a.write_bytes(buf_a.getvalue())
+        with self.assertRaises(DeployError):
+            safe_extract_zip(zip_a, self.case_dir / "out_a")
+
+        # Case B: directory 'sub/a.txt' created first, then file 'sub' tries to overwrite directory
+        buf_b = io.BytesIO()
+        with zipfile.ZipFile(buf_b, "w") as zf:
+            zf.writestr("sub/a.txt", b"nested-first")
+            zf.writestr("sub", b"file-over-dir")
+        zip_b = self.case_dir / "coll_b.zip"
+        zip_b.write_bytes(buf_b.getvalue())
+        with self.assertRaises(DeployError):
+            safe_extract_zip(zip_b, self.case_dir / "out_b")
+
+        # HTTP server traversal `/%2e%2e/plugin.json` -> 404, non-GET (`POST`) -> 501
+        pkg_zip = self.case_dir / "serve_mod" / "serve_mod.zip"
+        pkg_zip.parent.mkdir(parents=True, exist_ok=True)
+        pkg_zip.write_bytes(_make_mock_fobr_zip())
+        srv_cfg = WorkspaceConfig(
+            workspace_root=self.ws_root,
+            mods_dir=self.cfg.mods_dir,
+            sdk_dir=self.cfg.sdk_dir,
+            build_dir=self.case_dir,
+            cache_dir=self.cfg.cache_dir,
+        )
+        server = create_dev_http_server(config=srv_cfg, host="127.0.0.1", port=0)
+        t = threading.Thread(target=server.serve_forever, daemon=True)
+        t.start()
+        try:
+            port = server.server_address[1]
+            with self.assertRaises(HTTPError) as ctx_trav:
+                urlopen(f"http://127.0.0.1:{port}/%2e%2e/plugin.json", timeout=5)
+            self.assertEqual(ctx_trav.exception.code, 404)
+
+            req_post = Request(f"http://127.0.0.1:{port}/serve_mod.zip", data=b"{}", method="POST")
+            with self.assertRaises(HTTPError) as ctx_post:
+                urlopen(req_post, timeout=5)
+            self.assertEqual(ctx_post.exception.code, 501)
+        finally:
+            server.shutdown()
+            server.server_close()
+            t.join(timeout=5)
+
+    def test_client_inspector_rejects_corrupt_and_truncated_embedded_pck(self) -> None:
+        """C7: Fail loudly with PckFormatError on corrupt trailers, bad headers, out-of-bounds offsets, truncated entries, and ../ traversal."""
+        # 1. File smaller than 52 bytes
+        with self.assertRaises(PckFormatError):
+            parse_embedded_pck_stream(io.BytesIO(b"tiny"))
+
+        # 2. Bad trailer magic
+        valid_exe = build_synthetic_embedded_pck_exe({"mods/ok.txt": b"hello"})
+        bad_trailer = bytearray(valid_exe)
+        bad_trailer[-4:] = b"BAD!"
+        with self.assertRaises(PckFormatError):
+            parse_embedded_pck_stream(io.BytesIO(bytes(bad_trailer)))
+
+        # 3. Bad PCK header magic at embedded pck_start
+        bad_hdr = bytearray(valid_exe)
+        pck_size = struct.unpack("<Q", valid_exe[-12:-4])[0]
+        pck_start = len(valid_exe) - 12 - pck_size
+        bad_hdr[pck_start : pck_start + 4] = b"NOPE"
+        with self.assertRaises(PckFormatError):
+            parse_embedded_pck_stream(io.BytesIO(bytes(bad_hdr)))
+
+        # 4. Out-of-bounds dir_offset in PCK v2 header (`dir_offset` is at pck_start + 32)
+        bad_dir_off = bytearray(valid_exe)
+        struct.pack_into("<Q", bad_dir_off, pck_start + 32, pck_size + 9999)
+        with self.assertRaises(PckFormatError):
+            parse_embedded_pck_stream(io.BytesIO(bytes(bad_dir_off)))
+
+        # 5. Truncated entry table (huge entry count)
+        trunc_entries = bytearray(valid_exe)
+        dir_offset_rel = struct.unpack_from("<Q", valid_exe, pck_start + 32)[0]
+        struct.pack_into("<I", trunc_entries, pck_start + dir_offset_rel, 50)
+        with self.assertRaises(PckFormatError):
+            parse_embedded_pck_stream(io.BytesIO(bytes(trunc_entries)))
+
+        # 6. Path traversal inside PCK entry table during extract_embedded_pck
+        trav_exe = build_synthetic_embedded_pck_exe({"../evil.txt": b"owned"})
+        trav_path = self.case_dir / "trav.exe"
+        trav_path.write_bytes(trav_exe)
+        with self.assertRaises(PckFormatError):
+            extract_embedded_pck(trav_path, self.case_dir / "pck_out")
+
+        # 7. Out-of-bounds entry payload size in PCK entry table
+        bad_entry_size = bytearray(valid_exe)
+        name_len = struct.unpack_from("<I", valid_exe, pck_start + dir_offset_rel + 4)[0]
+        size_pos = pck_start + dir_offset_rel + 8 + name_len + 8
+        struct.pack_into("<Q", bad_entry_size, size_pos, 99999999)
+        bad_entry_path = self.case_dir / "oob_entry.exe"
+        bad_entry_path.write_bytes(bytes(bad_entry_size))
+        with self.assertRaises(PckFormatError):
+            parse_embedded_pck(bad_entry_path)
 
 
 if __name__ == "__main__":

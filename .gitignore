@@ -22,8 +22,10 @@ node_modules/
 .DS_Store
 Thumbs.db
 
-# Sub-mods (each managed in its own independent Git repo, except _template and tracked console mod)
+# Sub-mods (each managed in its own independent Git repo, except _template* and tracked console mod)
 /mods/*
 !/mods/_template/
+!/mods/_template-desktop-module/
+!/mods/_template-world-plugin/
 !/mods/sdk-log-console/
 

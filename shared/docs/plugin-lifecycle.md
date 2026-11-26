@@ -2,16 +2,20 @@
 
 > [!WARNING]
 > **Playtest 内测阶段免责声明**  
-> 当前处于 Steam Playtest 内测阶段，后续 Mod 接口可能存在变更。本文档基于官方现役 `Practice` 主线源码（`origin/codex/playtest-v060-20261122`）与本地 Steam 客户端及 Playtest `v0.0.57`–`v0.0.62` 更新记录核验沉淀。  
-> **实测验证基准**：现役 `Practice` 主线 `v0.0.60`（Git `cc3d43a5`）/ Steam Playtest `v0.0.57`–`v0.0.62`（本地端 `v0.0.60`，Commit `cc3d43a`）  
+> 当前处于 Steam Playtest 内测阶段，后续 Mod 接口可能存在变更。本文档基于官方现役 `Practice` 主线源码（`origin/codex/v065-unified-20261125`）与本地 Steam 客户端及 Playtest `v0.0.57`–`v0.0.65` 更新记录核验沉淀。  
+> **实测验证基准**：现役 `Practice` 主线 `v0.0.65`（Git `468999d4`，向下兼容 `v0.0.57`–`v0.0.62` `fus.session-plugin.v1`）  
 > **底盘引擎**：`Godot Engine v4.8.beta1.mono.official` (64-bit) + `.NET 10 CoreCLR` (`Practice.dll`)  
-> **验证日期**：`2026-11-24`
+> **验证日期**：`2026-11-25`
 
 ---
 
-## 1. 客户端插件目录结构与挂载识别机制
+## 1. 客户端插件目录结构与三协议挂载机制
 
-现役 `Practice` 主线的外部第三方插件由 C# 核心作业 `services/plugins/PluginPackageJob.cs` 与 GDScript 服务 `services/plugins/session_plugins.gd` 驱动，采用“内容可寻址包目录 + 强校验注册表 + 后台工作线程按需实例化”架构：
+现役 `Practice` 主线（`v0.0.65`）的外部第三方插件由 C# 核心作业 `services/plugins/PluginPackageJob.cs` 与 GDScript 服务 `services/plugins/session_plugins.gd` 统一驱动，在同一个内容寻址体系下支持 **3 种协议**：
+
+- **`fus.session-plugin.v1`**（局外会话导入插件，`.zip`）：在“会话管理页”由 `WorkerThreadPool` 后台瞬态实例化 `RefCounted` `entry.gd`，导出 `.world` 存档后释放。
+- **`fus.desktop-module.v1`**（局内纯本机桌面表现模块，`.zip` 直挂）：`local_only: true`、`network_version: 0`，禁止 `.pck`，由 `PluginPackageJob.EnsureMountPack()` 将 `mods/<id>/` 或 `external_modules/<id>/` 打包为 `cache/<id>/<sha256>.zip` 并在进桌时经 `ProjectSettings.load_resource_pack(pck_path, false)` 挂载，注册 `ExtensionBase` 入口场景。
+- **`fus.plugin.v2`**（局内联机世界模块，`.fup` 含 `content.pck` + `SHA256SUMS.txt`，或省略 `pack_file` 时纯 `.zip`）：支持 `local_only: false` + `network_version >= 1`、`CompBase` 自定义组件、`WorldModuleState` 三阶段持久化、`network.actions`/`projections` 联机同步与桌面 UI 槽位，亦可通过可选 `import_extensions` + `entry` 实现双栖混合扩展。
 
 ### 1.1 存储根路径与核心目录布局
 
@@ -91,21 +95,36 @@
 > [!NOTE]
 > **UTF-8 BOM 解析真相**：经源码核实，`PluginPackageJob.cs` 在读取 `plugin.json` 与 `registry.json` 时使用 .NET `StreamReader` / `File.ReadAllText`（默认开启 BOM 检测），会自动剥离 UTF-8 BOM；但 Godot GDScript 侧文本处理及外部工具对 BOM 敏感，因此本仓库 `validator.py` 仍严格要求所有源码与清单保持 UTF-8 无 BOM。
 
-### 2.1 清单 Schema 与完整字段定义（对照 `PluginPackageJob.ValidateManifest`）
+### 2.1 三协议清单 Schema 与完整字段定义（对照 `PluginPackageJob.ValidateManifest`）
+
+#### A. 局外会话导入清单（`fus.session-plugin.v1`）
 
 | 字段名 | 类型 | 必需 | 源码级强校验约束 |
 | :--- | :--- | :--- | :--- |
-| `schema` | `string` | **硬必填** | 严格等于 `"fus.session-plugin.v1"`，否则抛 `plugin_host_api_incompatible` |
-| `host_api` | `int` | **硬必填** | 严格等于 `1`，否则抛 `plugin_host_api_incompatible` |
-| `scope` | `string` | **硬必填** | 严格等于 `"session"`，否则抛 `plugin_host_api_incompatible` |
-| `id` | `string` | **硬必填** | 严格匹配 `^[a-z][a-z0-9_]{0,63}$`（**必须以小写字母开头，最长 64 字符**，禁止数字或下划线开头） |
+| `schema` | `string` | **硬必填** | 严格等于 `"fus.session-plugin.v1"` |
+| `host_api` | `int` | **硬必填** | 严格等于 `1`（原生整型，不可为布尔） |
+| `scope` | `string` | **硬必填** | 严格等于 `"session"` |
+| `id` | `string` | **硬必填** | 匹配 `^[a-z][a-z0-9_]{0,63}$`（小写字母开头，1..64 字符） |
 | `version` | `string` | **硬必填** | 匹配 `^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][a-zA-Z0-9._-]+)?$` |
-| `name` | `string` | **硬必填** | 长度 `1..80` 字符，界面显示的插件名称 |
+| `name` | `string` | **硬必填** | 长度 `1..80` 字符 |
 | `description` | `string` | 可选 | 默认 `""`，长度上限 `2000` 字符 |
-| `entry` | `string` | **硬必填** | 匹配 `^[a-zA-Z0-9_/-]+\.gd$` 且不含 `..`，允许子目录路径，且必须在 ZIP 内存在 |
-| `import_extensions` | `string[]` | **硬必填** | 必须为 JSON 数组（可为空数组 `[]`），上限 **`8`** 项，每项匹配 `^[a-z0-9]{1,12}$`（不含前导点号）；缺失即抛 `invalid_plugin_extensions`。若数组为空，界面与拖拽处理器均不会为该插件生成导入入口 |
-| `import_action_label` | `string` | 可选 | 导入按钮文案；缺省时 UI 回退为 `"导入 %s 文件" % ext.to_upper()` |
-| `settings` | `Array<SettingItem>` | **硬必填** | 必须为 JSON 数组（可为空数组 `[]`），上限 **`32`** 项；缺失即抛 `invalid_plugin_settings` |
+| `entry` | `string` | **硬必填** | 匹配 `^[a-zA-Z0-9_-]+(?:/[a-zA-Z0-9_-]+)*\.gd$` 且不含 `..`，必须在归档内存在 |
+| `import_extensions` | `string[]` | **硬必填** | JSON 数组，**1..8 项**，每项匹配 `^[a-z0-9]{1,12}$`（不含前导点号）；缺失抛 `invalid_plugin_extensions` |
+| `import_action_label` | `string` | 可选 | 导入按钮文案；缺省回退 `"导入 %s 文件" % ext.to_upper()` |
+| `settings` | `Array<SettingItem>` | **硬必填** | JSON 数组（可为 `[]`，上限 `32` 项）；缺失抛 `invalid_plugin_settings` |
+
+#### B. 局内扩展清单（`fus.desktop-module.v1` 与 `fus.plugin.v2`）
+
+| 字段名 | 类型 | 必需 | `fus.desktop-module.v1` 与 `fus.plugin.v2` 源码级约束 |
+| :--- | :--- | :--- | :--- |
+| `schema` | `string` | **硬必填** | `"fus.desktop-module.v1"` 或 `"fus.plugin.v2"` |
+| `host_api` | `int` | **硬必填** | `1` 或 `2`（推荐 `2`，原生整型） |
+| `scope` | `string` | 可选 | `""`、`null`、`"desktop"`、`"world"` 或 `"hybrid"`（默认 `""`） |
+| `id` / `version` / `name` / `description` | `string` | 同 v1 | 同上规范（`id` `<= 64`，`name` `1..80`，`description <= 2000`） |
+| `pack_file`（别名 `pck`） | `string` | 按模式区分 | **`fus.desktop-module.v1` 严禁设置**（含非空字段或归档内 `.pck` 均报 `invalid_plugin_pack`）；**`fus.plugin.v2`** 通常为 `"content.pck"`（匹配 `^[a-zA-Z0-9_.-]+\.pck$`，不设或 `""` 时退化为纯 `.zip` 挂载） |
+| `modules`（别名 `module` 单对象） | `Array<ModuleItem>` | **硬必填** | `1..16` 项，每项至少包含：<br>- `id`：匹配 `^[a-z][a-z0-9_]{0,63}(?:\.[a-z0-9_]{1,63})*$`（`<= 128` 字符）且须属于插件命名空间（`plugin_id`、`plugin_id.*`、`mod.<plugin_id>` 或 `mod.<plugin_id>.*`）<br>- `display_name`（或 `name`）：`1..80` 字符<br>- `entry_scene`（或 `path`）：`^res://(mods\|external_modules)/<plugin_id>/.*\.tscn$`（不含 `..`）<br>- `version`：`int >= 1`（默认 `1`）<br>- `local_only` & `network_version`：**`fus.desktop-module.v1` 强制 `local_only === true` 且 `network_version === 0`**；**`fus.plugin.v2`** 当 `local_only == false` 时须显式提供 `network_version >= 0`（推荐 `>= 1`）<br>- `isolated_lifecycle` / `probe_before_network_enable` / `requires` / `conflicts` / `suppresses`（`<= 32` 项）/ `description` / `disable_effect`：可选 |
+| `settings` | `Array<SettingItem>` | 可选 | 可省略或传 `null`（`registry.json` 写入时自动归一为 `[]`）；非空时遵循与 v1 相同的 `<= 32` 项与 `"bool"`/`"string"` 校验 |
+| `import_extensions` / `entry` / `import_action_label` | `string[]` / `string` | 可选（混合模式） | 若同时提供局外导入能力，`import_extensions` 与 `entry` 须同时合规并启用 `RefCounted` 导入入口 |
 
 ### 2.2 设置控件模式（`settings`）安装期硬校验与 UI 渲染
 
@@ -130,18 +149,22 @@
   - `"bool"` → `CheckBox`（每行 2 列 `GridContainer` 排列）；
   - `"string"` → `Label` + 单行 `LineEdit`（保存时自动 `.strip_edges()`，数值参数需用 `"string"` 承载并在 GDScript 内解析校验）。
 
-### 2.3 ZIP 归档安全与配额门禁（`PluginPackageJob.cs`）
+### 2.3 归档安全、`.fup` / `SHA256SUMS.txt` 与配额门禁（`PluginPackageJob.cs`）
 
 1. **体积与数量上限**：
    - 压缩包下载与单文件上限：`64 MiB`（超限抛 `plugin_download_limit` / `plugin_expanded_limit`）；
-   - ZIP 展开总大小上限：**`256 MiB`**（`plugin_expanded_limit`）；
-   - ZIP 条目总数：**`2..1000`**（不足 2 项或超过 1000 项抛 `plugin_file_limit`）；
-   - `plugin.json` 单文件上限：**`128 KiB`**（`plugin_manifest_limit`）；
+   - 解压总大小上限：**`256 MiB`**（`plugin_expanded_limit`）；
+   - 归档条目总数：**`2..1000`**（不足 2 项或超过 1000 项抛 `plugin_file_limit`）；
+   - `plugin.json` 与 `SHA256SUMS.txt` 单文件上限：**`128 KiB`**（`plugin_manifest_limit`）；
    - 已安装插件数上限：`128`（`plugin_count_limit`），目录遍历统计上限：`20,000` 文件项。
-2. **路径与符号链接防御**：
+2. **`.fup`（`fus.plugin.v2`）校验与 `EnsureMountPack`**：
+   - `.fup` 本质为 ZIP 容器，包含 `plugin.json`、`content.pck`（须以 Godot 4 `GDPC` 魔数起始，由无头 `PCKPacker` 生成并含 `.godot/imported/*` 导出资产）、可选混合 `entry` 与 `SHA256SUMS.txt`（每行 `<64位小写hex>  <相对路径>`，必须覆盖 `plugin.json` 与 `pack_file`，禁止重复路径或错漏哈希）。
+   - 对于省略 `pack_file` 的纯 `.zip` 局内包（含 `fus.desktop-module.v1`），`PluginPackageJob.EnsureMountPack()` 会在安装阶段将 `mods/<id>/` 与 `external_modules/<id>/` 自动封装为 `cache/<id>/<sha256>.zip` 供客户端 `ProjectSettings.load_resource_pack()` 挂载。
+3. **路径、二进制与全局 `class_name` 防御**：
    - 严禁反斜杠 `\`、冒号 `:`、前导 `/`、`.` 或 `..` 路径段、尾随 `.` 或空格，以及大小写不敏感的重复路径（Windows 碰撞，抛 `unsafe_zip_path`）；
-   - 严禁 ZIP 内包含 Unix 符号链接属性位 `((ExternalAttributes >> 16) & 0xF000) == 0xA000`（抛 `zip_link_rejected`）；
-   - 磁盘读写时递归检查所有祖先路径，拒绝任何 NTFS 符号链接/联接点（`FileAttributes.ReparsePoint`，抛 `linked_plugin_path`）。
+   - 严禁归档内包含 Unix 符号链接属性位（`0xA000`，抛 `zip_link_rejected`）及 NTFS 符号链接/联接点（`ReparsePoint`，抛 `linked_plugin_path`）；
+   - **严禁携带可执行/原生二进制扩展名**（`unsafe_plugin_binary`）：`.dll`、`.exe`、`.so`、`.dylib`、`.gdextension`、`.bat`、`.cmd`、`.ps1`、`.sh`；
+   - **局内 `.gd` 严禁全局 `class_name`**（`global_class_name_not_allowed`）：避免挂载多个 `.pck`/`.zip` 时产生全局脚本类冲突。
 
 ---
 
@@ -259,17 +282,14 @@ scenes/session/plugins/plugin_import.gd 调用 load(_row.entry_path).new()
    - **前置魔数与流式头校验（杜绝 Godot `ERROR:` 日志）**：在调用 `Image.load_*_from_buffer()` 前，必须先做二进制魔数（PNG/JPG/WEBP/BMP/GIF）与图像头/流校验，探测 `<svg` 时必须使用 `.get_string_from_ascii()`（严禁对未知二进制字节调用 `.get_string_from_utf8()` 触发 `Unicode parsing error`），并直接拒收 `.gif`（`GIF8`）及损坏字节流，避免 Godot C++ 层向 stderr 打印 `ERROR:` 导致 `verify-host` 失败。
    - **自发布文件追踪与 `MockHostBridge` 回退**：`ImportBridge._created_assets` 仅追踪 `archive_image()` 创建的文件；插件直接调用 `SharedAssetStore.Publish()` 写入 `destination/assets/` 的新文件须自行记录并在用户取消或失败时清理。在 `verify-host` 的 `MockHostBridge` 无头测试环境下不存在 `SharedAssetStore.cs` 与 `host.destination`/`host.root`，插件应先嗅探 `ResourceLoader.exists("res://services/storage/SharedAssetStore.cs")` 与非空 `host.destination`，未命中时跳过写盘并返回合法 `asset://<sha256>.<ext>`（推荐直接复用 `fu_sdk/modules/asset_publisher.gd`）。
 
-### 3.4 运行时 UI 限制实证与控制台日志插件范式（`mods/sdk-log-console/`）
+### 3.4 局外 UI 隔离边界与 `v0.0.65` 局内 `ExtensionBase` 生命周期
 
-经对只读官方源码仓 `<FUS_REPO_DIR>`（`codex/playtest-v060-20261122`，Commit `cc3d43a5`，`config/version="0.0.60"`）逐文件核验，外部 `fus.session-plugin.v1` 插件**不支持**在桌面世界（`DesktopScreen`）中挂载任何运行时 `Control`、`Window`、`PopupPanel` 或 `ui.desktop_panels` 面板：
-
-1. **Manifest 契约无 UI / 面板 / Autoload 字段**：`<FUS_REPO_DIR>/services/plugins/PluginPackageJob.cs:98-116, 247, 267` 强校验 `schema == "fus.session-plugin.v1"`、`host_api == 1`、`scope == "session"`、`settings`（`<= 32` 项且仅限 `"bool"` / `"string"`）、`import_extensions`（`<= 8` 项）与 ZIP 条目数 `2..1000`，不含任何桌面面板或场景挂载字段。
-2. **插件服务仅驻留局外 `SessionScreen`**：`<FUS_REPO_DIR>/services/plugins/session_plugins.gd:80` 注释明确指出“`App` 持有局外插件；开桌页只借用，不把安装服务带进世界”；`<FUS_REPO_DIR>/scenes/app/app.gd:79, 118, 260, 403-495` 仅将 `$SessionPlugins` 绑定到 `_session.bind_plugins($SessionPlugins)`，在 `_enter_desktop`（403–495 行）中绝不传入外部插件服务；`<FUS_REPO_DIR>/scenes/session/session_screen.gd:42-46, 72-76, 475-477` 仅将插件用于 `SessionSettings`、`PluginActions` 与 `$PluginImport`。
-3. **入口强制 `RefCounted` 且运行于 `WorkerThreadPool`**：`<FUS_REPO_DIR>/scenes/session/plugins/plugin_import.gd:118-149, 248` 明确拦截非 `RefCounted` 入口（若为 `Node` 则直接 `instance.free()`）并在后台线程 `WorkerThreadPool.add_task(...)` 执行 `inspect_import`/`prepare_import`；`<FUS_REPO_DIR>/scenes/session/plugins/session_plugin_actions.gd:17, 26` 与 `session_plugin_drop.gd:40-48, 62-83` 在 `import_extensions` 为空时直接隐藏按钮与拖放目标。
-4. **桌面扩展与面板槽位仅限受信任内置模块**：`<FUS_REPO_DIR>/scenes/desktop/desktop_screen.gd:102` 仅从 `FeatureCatalog.trusted_entries()` 启动 `$Extensions/FeatureManager`；`<FUS_REPO_DIR>/scenes/extension/feature_manager.gd:245-246, 314` 声明目录只信任内置代码且未安装模块仅保留原始状态；`<FUS_REPO_DIR>/scenes/desktop/layout/desktop_panel_host.gd:94-106, 159-166` 要求 `&"ui.desktop_panels"` 提供方必须为 `ExtensionBase` 子节点且具备活跃 `ExtensionContext` 与 `PackedScene`（`Control` 实现 `bind_provider`/`deactivate`）。
-5. **内置调试门禁与零 `.pck`/UGC 加载器**：`<FUS_REPO_DIR>/services/debug_tools.gd:120, 127, 138-143, 335-349` 将 `F3` 调试工具与 `record_event` 门禁在 `OS.is_debug_build()` 下，正式客户端由 `<FUS_REPO_DIR>/services/diagnostic_logger.gd:15-51` 通过 `OS.add_logger` 捕获引擎输出供 `F2` 诊断导出；`<FUS_REPO_DIR>/docs/research/session-plugins-20261025/README.md:29-35` 与全仓 `load_resource_pack`/`ISteamUGC` 检索均证实外部插件不进入 `FeatureManager` 或桌面运行时 UI。
-
-因此，工作区在 `mods/sdk-log-console/` 落地了完全符合宿主架构的替代范式：以标准 `fus.session-plugin.v1` `RefCounted` 插件订阅 **`LogBus`**（`logging/log_bus.gd`）并驱动 **`ModuleRegistry`**（`plugins/module_registry.gd`）审计各原生模块，将结构化调试/警告日志安全输出至 **`host.report` 进度条、`host.warn`（`metadata.notes` 受 `100 / 7000` 守卫）、Godot 引擎日志流（`DiagnosticLogger`）以及可选的世界内 `checklist` / `drawing`（`text_ink`）日志看板**。
+1. **局外 `fus.session-plugin.v1` 边界不变**：外部 `fus.session-plugin.v1` 插件依然严格运行于 `SessionScreen` + `WorkerThreadPool` 后台线程，入口必须为 `RefCounted` 且无法向 `DesktopScreen` 挂载任何运行时面板或 `Control`（纯日志/模块审计需求继续使用 `mods/sdk-log-console/` 范式，输出至 `host.report`、`host.warn` 与可选世界内 `checklist`/`drawing` 看板）。
+2. **`v0.0.65` 局内 `ExtensionBase` / `ExtensionContext` 生命周期（`fus.desktop-module.v1` & `fus.plugin.v2`）**：
+   - 客户端安装已启用的局内插件后，`services/plugins/session_plugins.gd` 在 `_sync_world_modules()` 中通过 `ProjectSettings.load_resource_pack(pck_path, false)` 挂载包资源，确认入口场景存在后写入 `DesktopFeatureCatalog.set_external_entries()`（若正在桌内更新/停用/卸载，标记 `restart_pending_ids` 等待重进会话生效）。
+   - 进入桌面时，`ExtensionRuntime` 实例化主场景根脚本（继承 `ExtensionBase` / `Node2D`），调用 `_on_register(context: ExtensionContext)` 完成服务发布（`publish_service`）、消费 `desktop_api`、订阅 `HookBus`、注册组件与 UI/覆盖层/网络槽位；模块卸载或退出桌面时自动执行 `context.revert_all()`（自动反注册所有钩子、槽位、组件并 `deactivate()` + `queue_free()` 通过 `mount_node` 挂载的节点）及 `_on_unregister()`。
+   - **温休眠与异步激活**：`ExtensionBase` 可选覆写 `supports_warm_scene_hibernation()`、`_on_warm_hibernate()`、`_on_warm_resume()`（支持场景缓存复用），以及通过 `hold_activation()` / `finish_activation()` / `activation_status()` 协调异步资源就绪。
+   - **共享 SDK 打包路径**：`fuvtt_cli.py build` 会按 `shared/sdk/fu_runtime/runtime_manifest.json` 自动将 `fu_runtime/*.gd`（6 脚本）与复用的 `fu_sdk` 公共脚本（6 脚本）注入 `<ns_root>/lib/{fu_runtime,fu_sdk}/`（`<ns_root>` 为 `mods/<plugin_id>` 或 `external_modules/<plugin_id>`），供主场景通过相对路径动态加载 `v2.gd`。
 
 ---
 
@@ -344,5 +364,5 @@ func prepare_import(_path: String, _options: Dictionary, host: RefCounted) -> Di
 ### 5.4 验证确认要点
 
 1. 运行 `python shared/tools/fuvtt_cli.py validate <mod-name>` 与 `build <mod-name>`，确认通过全部 C# `PluginPackageJob` 等价静态门禁并生成含 `file_hashes` 的 `build-manifest.json`。
-2. 运行 `python shared/tools/fuvtt_cli.py verify-host <mod-name>`，确认在 Godot 4.8-beta1 Mono 无头环境下全部 `.gd` 编译零错误、`inspect_import`/`prepare_import` 回合与 `var_to_bytes` 序列化往返通过。
-3. 使用 `fuvtt_cli.py sync <mod-name>`（或 `serve` + `--bump-dev`）部署到本地客户端，在会话管理页确认导入入口、配置表单与导入落盘全流程无报错。
+2. 运行 `python shared/tools/fuvtt_cli.py verify-host <mod-name>`（局内模块可追加 `--fus-repo`），确认在 Godot 4.8-beta1 Mono 无头环境下全部 `.gd` 编译零错误、`fus.session-plugin.v1` 导入往返或局内 `ExtensionBase` / `CompBase` / `WorldModuleState` / 零 `ObjectDB` 泄漏检查通过。
+3. 使用 `fuvtt_cli.py sync <mod-name>`（或 `serve` + `--bump-dev`）部署到本地客户端，在会话管理页或桌面模块选择页确认启用与运行无报错（局内模板可直接参考 `mods/_template-desktop-module/` 与 `mods/_template-world-plugin/`）。

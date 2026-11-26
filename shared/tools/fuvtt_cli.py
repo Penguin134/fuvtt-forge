@@ -51,6 +51,30 @@ def build_parser() -> argparse.ArgumentParser:
     # 1. init
     p_init = subparsers.add_parser("init", help="从标准模板创建新插件 (kebab-case -> snake_case)")
     p_init.add_argument("mod_name", metavar="<mod-name>", help="新插件目录名（kebab-case，如 dd2vtt-importer）")
+    p_init.add_argument(
+        "--mode",
+        choices=("session-plugin", "desktop-module", "world-plugin"),
+        default=None,
+        help="插件协议模式：session-plugin（默认 v1）、desktop-module（纯 ZIP 本机表现模块）、world-plugin（v2 世界模块）",
+    )
+    p_init.add_argument(
+        "--schema",
+        choices=("fus.session-plugin.v1", "fus.desktop-module.v1", "fus.plugin.v2"),
+        default=None,
+        help="显式指定清单 schema（可替代或校验 --mode）",
+    )
+    p_init.add_argument(
+        "--namespace",
+        choices=("mods", "external_modules"),
+        default=None,
+        help="域内模块命名空间（默认 desktop-module 用 mods，world-plugin 用 external_modules）",
+    )
+    p_init.add_argument(
+        "--pack-file",
+        dest="pack_file",
+        default=None,
+        help="world-plugin 模式的 PCK 文件名（默认 content.pck；传空串 \"\" 使用纯 ZIP 直挂）",
+    )
     p_init.add_argument("--name", dest="display_name", help="插件显示名称（默认根据目录名生成，1..80 字符）")
     p_init.add_argument(
         "--ext",
@@ -66,25 +90,26 @@ def build_parser() -> argparse.ArgumentParser:
     p_val = subparsers.add_parser("validate", help="对插件执行 Practice C# 宿主级静态契约、UTF-8 无 BOM 与配额校验")
     p_val.add_argument("mod_name", nargs="?", metavar="<mod-name>", help="指定单个插件目录名（如 _template 或 my-mod）")
     p_val.add_argument("--all", dest="select_all", action="store_true", help="校验 mods/ 下全部插件")
-    p_val.add_argument("--include-template", action="store_true", help="配合 --all 时额外包含 _template")
+    p_val.add_argument("--include-template", action="store_true", help="配合 --all 时额外包含模板目录")
 
     # 3. build
-    p_build = subparsers.add_parser("build", help="校验、自动内嵌 fu_sdk 并生成确定性 ZIP 插件包与逐文件哈希清单")
+    p_build = subparsers.add_parser("build", help="校验、自动内嵌 SDK 并生成确定性 .zip 或 .fup 插件包与哈希清单")
     p_build.add_argument("mod_name", nargs="?", metavar="<mod-name>", help="指定单个插件目录名")
     p_build.add_argument("--all", dest="select_all", action="store_true", help="打包 mods/ 下全部插件")
-    p_build.add_argument("--include-template", action="store_true", help="配合 --all 时额外包含 _template")
+    p_build.add_argument("--include-template", action="store_true", help="配合 --all 时额外包含模板目录")
     p_build.add_argument(
         "--bump-dev",
         action="store_true",
         help="打包前自动递增 plugin.json 的补丁版本号 (patch)，防止本地热更新触发 plugin_version_conflict",
     )
-    p_build.add_argument("--no-sdk", action="store_true", help="不自动内嵌 shared/sdk/fu_sdk/")
+    p_build.add_argument("--no-sdk", action="store_true", help="不自动内嵌 shared/sdk/fu_sdk 或 fu_runtime")
+    p_build.add_argument("--godot-bin", dest="godot_bin", help="显式指定 Godot 控制台可执行文件路径（用于 .fup/.pck 打包）")
 
     # 4. sync
     p_sync = subparsers.add_parser("sync", help="离线内容寻址部署并无损合并更新客户端 registry.json（含 file_hashes/settings）")
     p_sync.add_argument("mod_name", nargs="?", metavar="<mod-name>", help="指定单个插件目录名")
     p_sync.add_argument("--all", dest="select_all", action="store_true", help="同步 mods/ 下全部插件")
-    p_sync.add_argument("--include-template", action="store_true", help="配合 --all 时额外包含 _template")
+    p_sync.add_argument("--include-template", action="store_true", help="配合 --all 时额外包含模板目录")
     p_sync.add_argument("--dry-run", action="store_true", help="仅预演部署路径与哈希，不实际写入客户端目录")
     p_sync.add_argument(
         "--allow-same-version",
@@ -97,6 +122,7 @@ def build_parser() -> argparse.ArgumentParser:
         dest="target_dir",
         help="显式指定目标 session_plugins 目录（覆盖 .env.local 配置，常用于测试）",
     )
+    p_sync.add_argument("--godot-bin", dest="godot_bin", help="显式指定 Godot 控制台可执行文件路径（自动重打包 .fup 时使用）")
 
     # 5. serve
     p_serve = subparsers.add_parser("serve", help="启动本地 HTTP 静态源以配合客户端 UI 免重启检查更新")
@@ -121,12 +147,20 @@ def build_parser() -> argparse.ArgumentParser:
     p_insp.add_argument("--json", dest="as_json", action="store_true", help="以 JSON 格式输出快照与比对结果")
 
     # 7. verify-host
-    p_ver = subparsers.add_parser("verify-host", help="使用隔离 Godot 4.8-beta1 无头引擎真实编译并执行插件导入回合冒烟")
+    p_ver = subparsers.add_parser("verify-host", help="使用隔离 Godot 4.8-beta1 无头引擎真实编译并执行插件契约冒烟")
     p_ver.add_argument("mod_name", nargs="?", metavar="<mod-name>", help="指定单个插件目录名（如 _template 或 my-mod）")
     p_ver.add_argument("--all", dest="select_all", action="store_true", help="验证 mods/ 下全部插件")
-    p_ver.add_argument("--include-template", action="store_true", help="配合 --all 时额外包含 _template")
+    p_ver.add_argument("--include-template", action="store_true", help="配合 --all 时额外包含模板目录")
     p_ver.add_argument("--sample", dest="sample_path", help="可选：显式指定传入 inspect_import/prepare_import 的样本文件路径")
     p_ver.add_argument("--godot-bin", dest="godot_bin", help="显式指定 Godot 控制台可执行文件路径（覆盖 GODOT_BIN）")
+    p_ver.add_argument(
+        "--fus-repo",
+        dest="fus_repo",
+        nargs="?",
+        const="auto",
+        default=None,
+        help="可选：使用只读暂存的官方 FUS 源码仓执行宿主级联动验证（不填路径则读取 FUS_REPO_DIR）",
+    )
     p_ver.add_argument("--timeout", type=int, default=120, help="单个插件无头校验超时秒数（默认 120）")
 
     return parser
@@ -155,11 +189,19 @@ def main(
                 action_label=args.action_label,
                 description=args.description,
                 force=args.force,
+                mode=args.mode,
+                schema=args.schema,
+                namespace=args.namespace,
+                pack_file=args.pack_file,
             )
             rel_dir = res.target_dir.relative_to(cfg.workspace_root).as_posix()
             print(f"[OK] 已创建插件脚手架：{rel_dir}")
+            print(f"  - 协议 Schema:          {res.schema}")
             print(f"  - 清单 ID (snake_case): {res.plugin_id}")
             print(f"  - 显示名称:             {res.display_name}")
+            if res.entry_scene_path is not None:
+                rel_scene = res.entry_scene_path.relative_to(cfg.workspace_root).as_posix()
+                print(f"  - 入口场景:             {rel_scene}")
             print(f"  - 下一步校验命令:       python shared/tools/fuvtt_cli.py validate {res.mod_name}")
             return 0
 
@@ -201,17 +243,24 @@ def main(
                 include_template=args.include_template,
                 bump_dev=args.bump_dev,
                 no_sdk=args.no_sdk,
+                godot_bin=args.godot_bin,
             )
             if not artifacts:
                 print("[WARN] 未找到可构建的插件。")
                 return 0
 
             for art in artifacts:
-                rel_zip = art.zip_path.relative_to(cfg.workspace_root).as_posix()
-                sdk_tag = "with fu_sdk" if art.sdk_bundled else "no-sdk"
+                rel_pkg = art.zip_path.relative_to(cfg.workspace_root).as_posix()
+                if not art.sdk_bundled:
+                    sdk_tag = "no-sdk"
+                elif art.schema in ("fus.desktop-module.v1", "fus.plugin.v2"):
+                    sdk_tag = "with fu_runtime+fu_sdk"
+                else:
+                    sdk_tag = "with fu_sdk"
                 print(
-                    f"[BUILT] {art.mod_name} -> {rel_zip} "
-                    f"(id={art.plugin_id}, v{art.version}, {art.zip_size_bytes} B, files={len(art.files)}, {sdk_tag})"
+                    f"[BUILT] {art.mod_name} -> {rel_pkg} "
+                    f"(schema={art.schema}, id={art.plugin_id}, v{art.version}, "
+                    f"{art.zip_size_bytes} B, files={len(art.files)}, {sdk_tag})"
                 )
                 print(f"  SHA-256: {art.sha256}")
             return 0
@@ -225,6 +274,7 @@ def main(
                 dry_run=args.dry_run,
                 target_dir=args.target_dir,
                 allow_same_version=args.allow_same_version,
+                godot_bin=args.godot_bin,
             )
             if not results:
                 print("[WARN] 未找到可同步的插件。")
@@ -293,6 +343,7 @@ def main(
                 sample_path=args.sample_path,
                 godot_bin=args.godot_bin,
                 timeout_seconds=args.timeout,
+                fus_repo=args.fus_repo,
             )
             if not results:
                 print("[WARN] mods/ 目录下未找到可验证的插件。")
@@ -303,17 +354,22 @@ def main(
                 rel_ev = vres.evidence_dir.relative_to(cfg.workspace_root).as_posix()
                 if vres.ok:
                     print(
-                        f"[PASS] {vres.mod_name} (id={vres.plugin_id}, v{vres.version}, "
+                        f"[PASS] {vres.mod_name} (schema={vres.schema}, id={vres.plugin_id}, v{vres.version}, "
                         f"checks={vres.passed_checks}, scripts={len(vres.loaded_scripts)}, "
                         f"entities={vres.entity_count}, bytes={vres.serialized_bytes})"
                     )
+                    if vres.host_contract_probe:
+                        print(
+                            f"  FUS 宿主联动校验: ok={vres.host_contract_probe.get('ok')} "
+                            f"(checks={vres.host_contract_probe.get('passed_checks', 0)})"
+                        )
                     print(f"  验证证据: {rel_ev}")
                     for warn in vres.warnings:
                         print(f"  [WARN] {warn}")
                 else:
                     any_failed = True
                     print(
-                        f"[FAIL] {vres.mod_name} (exit={vres.exit_code}, timed_out={vres.timed_out}, "
+                        f"[FAIL] {vres.mod_name} (schema={vres.schema}, exit={vres.exit_code}, timed_out={vres.timed_out}, "
                         f"checks={vres.passed_checks})"
                     )
                     print(f"  验证证据: {rel_ev}")

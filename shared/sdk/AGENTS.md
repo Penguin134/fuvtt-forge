@@ -23,3 +23,11 @@
 
 - 修改任何跨模块公共约定（如引用持有方式、错误返回结构、注册表字段）时，必须一次性同步全部受影响 `plugins/*.gd` 与 `shared/sdk/README.md`，避免遗留新旧分裂。
 - 交付前必须通过：`python shared/tools/fuvtt_cli.py validate --all --include-template`、`verify-host` 及对应 `shared/tools/tests/` 套件。
+
+## 5. 游戏内运行时 SDK（`fu_runtime/`）扩展与不变量
+
+- **`fu_sdk/` 35 脚本不可变边界**：`shared/sdk/fu_sdk/` 必须保持既有的 **35 个 `.gd` 脚本**（受 `test_devtools.py` 锁定，供 `fus.session-plugin.v1` 使用）；所有面向 `fus.desktop-module.v1` 与 `fus.plugin.v2` 的游戏内运行时封装一律置于同级目录 `shared/sdk/fu_runtime/`（含 `v2.gd`、`desktop_api_helper.gd`、`hook_helper.gd`、`slot_helper.gd`、`comp_helper.gd`、`network_helper.gd` 与 `runtime_manifest.json`）。
+- **文件卫生与无全局注册**：`fu_runtime/*.gd` 全部首行必须为 `extends RefCounted`，使用 UTF-8 无 BOM 与 LF（`\n`）换行，**严禁声明 `class_name`、调用 `preload(`、硬编码本机路径或书写字面 `\u0000`**（对齐 `<FUS_REPO_DIR>` `tools/build_world_plugin.gd` 打包校验）。
+- **双定位相对加载契约**：`fu_runtime/` 内部统一通过 `(get_script() as Script).resource_path.split("::")[0].get_base_dir()`（附 `get_stack()` 与相对开发路径回退）同时解析同级辅助脚本与 `../fu_sdk/` 共享模块，并检测 `ResourceLoader.exists(p) or FileAccess.file_exists(p)` 以兼容 `.pck`（`fus.plugin.v2`）与纯 `.zip`（`fus.desktop-module.v1`）挂载。
+- **零重复复用与 `runtime_manifest.json` 同步**：`fu_runtime/` 必须直接复用 `../fu_sdk/utils/{dag_cloner,bounded_cloner,value_utils,validation_utils}.gd`、`../fu_sdk/logging/log_bus.gd` 与 `../fu_sdk/plugins/module_registry.gd`，严禁复制实现任何深拷贝、周期检测、日志总线或标量强转逻辑；增删脚本时必须同步更新 `shared/sdk/fu_runtime/runtime_manifest.json`（由 `packager.py` 据此打包至 `<namespace_root>/lib/{fu_runtime,fu_sdk}/`）。
+- **`WeakRef` 零泄漏与宿主契约守卫**：反向持有 `FuRuntime`、`ExtensionContext`、`ExtensionBase`、`DesktopApiService` 或 `LogBus` 一律使用 `WeakRef`（仅 `_sub_script_cache` / `_util_scripts` 缓存 `Script` 句柄），无头测试必须保持 `Performance.OBJECT_COUNT` 差值为 `0.0`；`fus.desktop-module.v1`（`local_only`）严禁注册 `network.actions`/`network.projections`；`ui.mode_bar` 的 `on_enter` 必须严格返回 `bool` `true`；`network.*` 槽位 `spec.id` 必须严格等于 `MODULE_ID`。

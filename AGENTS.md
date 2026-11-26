@@ -6,10 +6,13 @@
 
 - `.agents/rules/`：预留全局协作规则目录（当前保持空置，避免无关规则注入默认上下文）。
 - `.agents/workflows/`：预留常用自动化工作流目录。
-- `mods/_template/`：标准插件脚手架模板，新建插件从此目录复制。
+- `mods/_template/`：标准局外导入插件脚手架模板（`fus.session-plugin.v1`）。
+- `mods/_template-desktop-module/`：标准纯本机桌面表现模块模板（`fus.desktop-module.v1`）。
+- `mods/_template-world-plugin/`：标准联机世界模块模板（`fus.plugin.v2`）。
+- `mods/sdk-log-console/`：局外控制台日志与模块治理示例插件（`fus.session-plugin.v1`）。
 - `mods/<mod-name>/`：独立插件包目录（包含专属 `AGENTS.md`、`src/`、`assets/` 与清单文件）。
 - `shared/docs/`：共享底层技术知识库（纯按需懒加载，禁止默认预加载）。
-- `shared/sdk/`：跨插件复用的已验证公共类型声明与纯工具函数目录。
+- `shared/sdk/`：跨插件复用的已验证公共库，含局外 `fu_sdk/`（35 脚本，`v1.3.0`）与局内 `fu_runtime/`（`v2.0.0`）。
 - `shared/tools/`：本地构建、打包、真机无头验证与客户端巡检脚本目录（读取 `.env.local` 配置）。
 - `build/`：所有插件的统一构建输出、解包与无头验证证据根目录（按 `build/<mod-name>/` 隔离，已加入 `.gitignore`）。
 - `.cache/`：包管理器与构建工具临时缓存根目录（已加入 `.gitignore`）。
@@ -30,7 +33,7 @@
 
 - **产物与缓存收敛**：所有编译输出、解包与无头测试隔离目录统一写入工作区内 `build/<mod-name>/`，所有缓存与契约快照统一指向 `.cache/`，严禁向工作区外用户主目录或系统全局目录写入缓存，防止触发沙箱 `Permission Denied`。
 - **外部路径统一配置**：本地客户端目录（`FUVTT_INSTALL_DIR`）、只读官方源码库（`FUS_REPO_DIR` / `FUS_SOURCE_REF`）与 Godot 无头控制台（`GODOT_BIN`）仅通过未入库的 `.env.local` 配置（模板见 `.env.example`）；严禁在代码、脚本、配置或文档中硬编码本机绝对路径（文档与脱敏日志统一使用 `<FUVTT_INSTALL_DIR>`、`<FUS_REPO_DIR>`、`<GODOT_BIN>` 占位符）。
-- **外部官方源码仓只读与双线防混淆铁律**：仅允许以纯只读方式（如 `git -C <FUS_REPO_DIR> show <ref>:<path>`）核对契约，**严禁对 `<FUS_REPO_DIR>` 执行任何文件写入、删除或 `git checkout`**；生产插件、SDK 与脚手架 100% 锚定现役 `Practice` 主线（`origin/codex/fuvtt-project-sync` / Steam 客户端，`fus.session-plugin.v1`），严禁将已替代的早期 `FUS-F2` 原型分支（`f2.feature_plugin.v1`）契约混用于生产交付。
+- **外部官方源码仓只读与双线防混淆铁律**：仅允许以纯只读方式（如 `git -C <FUS_REPO_DIR> show <ref>:<path>`）核对契约，**严禁对 `<FUS_REPO_DIR>` 执行任何文件写入、删除或 `git checkout`**；生产插件、SDK 与脚手架 100% 锚定现役 `Practice` 主线（`origin/codex/v065-unified-20261125` / Steam 客户端 `v0.0.65`，支持 `fus.session-plugin.v1`、`fus.desktop-module.v1` 与 `fus.plugin.v2` 三协议），严禁将已替代的早期 `FUS-F2` 原型分支（`f2.feature_plugin.v1`）契约混用于生产交付。
 - **凭证与权限边界**：严禁读取、打印或提交任何 Steam 账号信息、发布令牌或私人存档；需要访问工作区外部路径时，必须遵守沙箱边界与用户显式授权。
 - **跨包依赖隔离**：`mods/<mod-a>/` 禁止直接引用 `mods/<mod-b>/src/` 内部实现；经过验证可复用的类型或工具函数，必须提炼至 `shared/sdk/` 后再跨插件复用。
 - **Godot 无头防弹窗硬约束**：调用 `<GODOT_BIN>` 的命令或测试须传入 `--headless --quit`（Windows 子进程设置 `CREATE_NO_WINDOW`），且通过终端工具执行时**必须直接设置 `BypassSandbox: true`**（沙箱拦截工作区外 `GodotSharp` 目录会触发报错并弹出系统 GUI 对话框，禁止先在沙箱内试错）。
@@ -40,4 +43,4 @@
 - **多智能体模型分工默认偏好**：在支持指定模型的子智能体/Swarm 协作场景下（除非用户当次另有指定），默认将简单/常规任务交由 `Hydrogen (Extra)`，编码实现交由 `Neon (High)`，项目管理与验收审查交由 `Carbon (High)`。
 - **文件编码与命名**：全部文本源码、配置与文档统一使用 UTF-8 无 BOM 编码；插件目录命名统一采用 `kebab-case`（如 `dnd5e-sheet-helper`）。
 - **提交信息前缀**：采用约定式提交前缀：`feat(<mod>):`、`fix(<mod>):`、`docs(shared):`、`chore(tools):`、`refactor(<scope>):`。
-- **文档同步要求**：每当从 Playtest 客户端或官方源码核实新接口、字段或兼容问题并更新 `shared/docs/` 时，须同步记录对应客户端版本号、Commit 哈希与验证日期。
+- **文档同步要求**：每当从 Playtest 客户端或官方源码核实新接口、字段或兼容问题并更新 `shared/docs/` 时，须同步记录对应客户端版本号、Commit 哈希与验证日期；同步维护配套 Wiki 仓库时，须先读取其 `.meta/terminology.md` 对齐标准术语与礼貌客观文风。

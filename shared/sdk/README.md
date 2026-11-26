@@ -1,11 +1,13 @@
-# Shared SDK (`fu_sdk` 防腐层共享库)
+# Shared SDK（`fu_sdk` 局外导入库 & `fu_runtime` 局内运行时库）
 
-本目录承载跨插件复用的 **Fu vtt 防腐层 SDK（Anti-Corruption Layer）**，为工作区内所有 `mods/<mod-name>/` 提供稳定的跑团场景导入语义接口，彻底屏蔽宿主底层字典结构与内测期接口变动风险。
+本目录承载跨插件复用的 **Fu vtt 双模共享 SDK**，分别为局外会话导入插件（`fus.session-plugin.v1`）与局内桌面/联机世界模块（`fus.desktop-module.v1`、`fus.plugin.v2`）提供稳定的防腐层接口、工具函数与生命周期守卫。
 
 > [!WARNING]
 > **Playtest 内测阶段说明**  
-> 当前实测验证基线为现役 **`Practice` 主线 `v0.0.60`（Git `origin/codex/playtest-v060-20261122`，Commit `cc3d43a5`）/ Steam Playtest `v0.0.57`–`v0.0.62`**，验证日期：`2026-11-24`（`fus.session-plugin.v1` / `host_api = 1` / `fus.practice.world` v3 / `fus.floor_layers.v2` / `SceneRepository` v2；含 `v0.0.61`–`v0.0.62` `campaign_time` 与 `dnd_opportunity` Playtest 临时禁用与状态保留）。  
-> 所有与客户端底层强耦合的字段名、组件脚本路径与图层结构均已收敛至 `fu_sdk/adapters/` 与 `fu_sdk/plugins/`，禁止在业务插件中直接硬编码底层世界字典。本 SDK **不适用于**旧原型线 `FUS-F2`（`v0.1.80`）。
+> 当前实测验证基线为现役 **`Practice` 主线 `v0.0.65`（Git `origin/codex/v065-unified-20261125`，Commit `468999d4`）/ Steam Playtest 客户端**，验证日期：`2026-11-25`（向下 100% 兼容 `v0.0.57`–`v0.0.62` 的 `fus.session-plugin.v1` / `host_api = 1` 导入插件）。  
+> - **`fu_sdk/`（`v1.3.0`，35 个 `.gd` 脚本）**：专用于 `fus.session-plugin.v1` 离线会话导入（`RefCounted` `entry.gd`），其 `utils/` 与 `logging/log_bus.gd`、`plugins/module_registry.gd` 同时作为共享基础设施被 `fu_runtime/` 直接复用。
+> - **`fu_runtime/`（`v2.0.0`，6 个 `.gd` 脚本 + `runtime_manifest.json`）**：专用于 `fus.desktop-module.v1`（`local_only` 纯 `.zip`）与 `fus.plugin.v2`（`.fup` + `content.pck`）局内模块（`ExtensionBase`）。  
+> 所有底层字典结构、组件路径与宿主槽位规则已收敛至本 SDK，禁止在业务插件中绕过校验直接硬编码宿主内部状态。本 SDK **不适用于**早期已替代原型线 `FUS-F2`（`f2.feature_plugin.v1`）。
 
 ## 1. 目录结构与职责边界
 
@@ -16,7 +18,7 @@
   - `host.has_method(...)` 宿主能力安全嗅探（`cancelled`、`report`、`warn`、`archive_image`、`inspect_source`、`decode_source`、`empty_world`、预览回调）；
   - `inspect_import` 返回值兜底保护（自动计算 `sha256`、`source_bytes`、`decoded_bytes`、`unique_images`、`name`，并补齐包含 `"unsupported": 0` 在内的全部 12 项默认 `counts` 键）；
   - 世界字典强契约守卫：`extract_default_world_targets()` 兜底补齐 `entity_state.version = 3` 与 `modules = {"version": 2, "entries": {}}`；
-  - 坐标、文本、矢量与模块预算守卫：头部 UTF-8 BOM（`0xFEFF`）剥离、`pos/rot/scale` 有限数与非零缩放守卫、`footprint_radius ∈ [0.5, 4096.0]`、`font_size ∈ [1.0, 4096.0]`、`text <= 65536`、`vertices <= 600000`、`paths <= 8192`、总点数 `<= 800000`，以及 `world.modules` 递归纯数据净化与 **`16 MiB / 24 MiB / 30 MiB`** 预算校验（对齐 `v0.0.60` `world_module_state.gd` 标量成本表）；
+  - 坐标、文本、矢量与模块预算守卫：头部 UTF-8 BOM（`0xFEFF`）剥离、`pos/rot/scale` 有限数与非零缩放守卫、`footprint_radius ∈ [0.5, 4096.0]`、`font_size ∈ [1.0, 4096.0]`、`text <= 65536`、`vertices <= 600000`、`paths <= 8192`、总点数 `<= 800000`，以及 `world.modules` 递归纯数据净化与 **`16 MiB / 24 MiB / 30 MiB`** 预算校验（对齐 `v0.0.60`–`v0.0.65` `world_module_state.gd` 标量成本表）；
   - **`SceneRepository` 多场景常驻目录与 `CompSceneBox` 防腐封装**：自动维护 `world.modules.entries["scene_box"]`（`version = 1`, `schema_version = 2`, `1..64` 场景互斥划分 `<= 512` 楼层），同步 `host_active_scene_uid` 与 `catalog.active_floor_uid`，支持 `add_scene_box` / `attach_scene_box`（固定正方形 `[72.0, 256.0]`、`xform.scale = Vector2.ONE`、`CompPermission` 三态映射、`cover_asset` 正则校验）与 `BoardToken.SCENE_BOX_CONFLICTS` 互斥守卫；
   - **`sprite_path` 前置合法性拦截（拆分 `asset://` 与 `res://` 白名单）**：`ALLOWED_ASSET_IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "webp", "bmp"]`（对齐宿主 `CampaignImageFiles` / `ImageHeader`，拒收 `.svg` 与 `.gif`）、`ALLOWED_RES_IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "webp", "bmp", "svg"]`，主动拦截 `user://` 等非法路径并向 `ImportSession` 记警告；
   - **跨楼层 `layer_uid_override` 自动解析**：`WorldBuilder` 维护 `_layer_to_floor` 反向索引，跨场景/跨楼层传 `layer_uid_override` 写入实体时自动在 `world.members` 绑定图层所属真实 `floor_uid`；
@@ -24,7 +26,7 @@
   - **核心组件前缀不变量与 `parked`/`manual` 停放支持**：`append_entity()` 与 `append_entity_component()` 严格锁死 `components[0] = comp_visual.gd`、`components[1] = comp_permission.gd`，所有可选组件一律追加在索引 `>= 2`，并支持 `parked: bool` 与 `manual: bool`（仅当 `parked == true` 时有效，对齐 `<FUS_REPO_DIR>/scenes/entities/board_token.gd:301-368`）。
 - `fu_sdk/logging/log_bus.gd`（R3 结构化日志总线）：提供 `DEBUG`/`INFO`/`WARNING`/`ERROR` 四级日志、有界环形缓冲区、顺序游标读取、实时订阅/退订机制，以及受 `100 条 / 7000 字符` 上限保护的 `ImportBridge` 宿主桥接转发。
 - `fu_sdk/plugins/`（R1 & R2 原生模块注册表与 23 个独立分脚本 SDK）：
-  - `plugins/module_registry.gd`：完整收录 `<FUS_REPO_DIR>` `DesktopFeatureCatalog` 的 `30` 个正式模块（`9` 核心 + `21` 可选）与 `3` 个非目录候选模块（`entity_notes`、`music_board`、`module_example`），追踪声明式启用状态、Playtest `v0.0.61`–`v0.0.62` 禁用状态（`campaign_time`、`dnd_opportunity`），并在调用未启用/被禁用/未入目录模块时执行 R2 警告与 `"preserve"` / `"skip"` 策略；
+  - `plugins/module_registry.gd`：完整收录 `v0.0.60`–`v0.0.62` 基线 `<FUS_REPO_DIR>` `DesktopFeatureCatalog` 的 `30` 个正式模块（`9` 核心 + `21` 可选）与 `3` 个非目录候选模块（`entity_notes`、`music_board`、`module_example`，共 `33` 项；注：`v0.0.65` 宿主 `DesktopFeatureCatalog` 另新增 `entity_box`、`avg`、`dnd_character_sheet`、`monster_compendium`、`stat_bubbles` 5 个可选内置模块，扩展为 `9` 核心 + `26` 可选 = `35` 项），追踪声明式启用状态、Playtest `v0.0.61`–`v0.0.62` 禁用状态（`campaign_time`、`dnd_opportunity`），并在调用未启用/被禁用/未入目录模块时执行 R2 警告与 `"preserve"` / `"skip"` 策略；
   - `plugins/<module_id>.gd`（共 **23** 个独立脚本，严禁将多个原生插件混写在同一脚本内）：每个具备 Mod 可用接口或持久化状态的原生插件独立拆分；**全部 23 个**分脚本（**5** 个核心基础模块 + **18** 个可选及候选插件分脚本）均在 `configure()` 内通过 `WeakRef`（`_world_builder_ref` + `_wb()`）持有 `WorldBuilder` 弱引用，彻底规避 `RefCounted` 循环引用（经无头实测 `ObjectDB` 泄漏增量为 `0.0`）。
 - `fu_sdk/modules/`（4 个跨插件复用的纯 GDScript 功能子模块库，随 `lib/fu_sdk/` 一并自动内嵌打包，见 §3.5；内部严禁 `load()` 同级 `modules/*.gd` 或 `utils/*.gd`）：
   - `asset_publisher.gd`（图片魔数/头预检、BMP/SVG 转 PNG、`SharedAssetStore.Publish` 与 `MockHostBridge` 回退）
@@ -241,11 +243,11 @@ logger.unsubscribe(token)
 ### 3.7 R2 原生插件注册表与 23 个分脚本 SDK (`plugins/module_registry.gd` & `plugins/*.gd`)
 
 #### 1. `ModuleRegistry` 与 `WorldBuilder` R2 控制接口
-`plugins/module_registry.gd` 收录 `<FUS_REPO_DIR>/scenes/extension/desktop_feature_catalog.gd` 的全部 **30 个目录模块（9 核心 + 21 可选）** 与 **3 个非目录候选模块**（共 **33** 项），并标记 Steam Playtest `v0.0.61`–`v0.0.62` 临时禁用的模块（`campaign_time`、`dnd_opportunity`）：
+`plugins/module_registry.gd` 收录 `v0.0.60`–`v0.0.62` 基线 `<FUS_REPO_DIR>/scenes/extension/desktop_feature_catalog.gd` 的 **30 个目录模块（9 核心 + 21 可选）** 与 **3 个非目录候选模块**（共 **33** 项；`v0.0.65` 宿主 `DesktopFeatureCatalog` 已进一步扩展至 **35** 个目录模块，新增 `entity_box`、`avg`、`dnd_character_sheet`、`monster_compendium`、`stat_bubbles` 5 个可选模块），并标记 Steam Playtest `v0.0.61`–`v0.0.62` 临时禁用的模块（`campaign_time`、`dnd_opportunity`）：
 
 - **9 个核心模块（`status = "core"`，默认启用）**：`feature_networking`、`feature_component_sync`、`feature_edit_mode`、`feature_floor_system`、`feature_layer_stack`、`feature_obstacle_authoring`、`feature_debug_hooks`、`feature_component_library`、`feature_entity_library`（其中 `networking`、`component_sync`、`debug_hooks`、`component_library` 为纯元数据注册无单独写入脚本）。
 - **21 个可选模块（默认 `status = "disabled"`，需在桌面/构建器显式启用）**：`campaign_time`（`playtest_blocked`）、`image_flip`、`drag_movement`、`drawing`、`areas`、`room_chat`、`checklist`、`player_cursors`、`resource_pool`、`map_fog_editor`、`grid_alignment`、`detached_sidebar`、`character_roster`、`portal`、`backpack`、`dnd_opportunity`（`playtest_blocked`）、`follow`、`simple_fog`、`dice`、`candidate_initiative`、`scene_box`（其中 `room_chat`、`player_cursors`、`map_fog_editor`、`detached_sidebar` 为无 Mod 持久化状态模块）。
-- **3 个非目录候选模块（`status = "uncatalogued_candidate"`）**：`entity_notes`（提供独立 SDK，在 `v0.0.60` 客户端载入时由 `EntityStateCodec` 自动停放）、`music_board`、`module_example`（别名 `feature_module_example`）。
+- **3 个非目录候选模块（`status = "uncatalogued_candidate"`）**：`entity_notes`（提供独立 SDK，自 `v0.0.60` 至 `v0.0.65` 仍未入正式目录，载入时由 `EntityStateCodec` 自动停放）、`music_board`、`module_example`（别名 `feature_module_example`）。
 - **`WorldBuilder` 启用控制与策略方法**：
   - `get_module_registry() -> RefCounted`、`set_enabled_modules(ids: Array)`、`set_module_enabled(module_id, enabled)`、`is_module_enabled(module_id) -> bool`；
   - `set_disabled_module_policy(policy: String) -> bool` / `get_disabled_module_policy() -> String`：
@@ -271,7 +273,7 @@ logger.unsubscribe(token)
 | **World** | `plugins/drag_movement.gd` | `builder.drag_movement()` | `world.modules.entries["drag_movement"]` v2（`DEFAULT_SPEED = 64.0`；支持 `configure_default_speed` 与字典态 `configure_drag_movement`）+ `comp_drag_speed.gd` |
 | **World** | `plugins/drawing.gd` | `builder.drawing()` | `world.modules.entries["drawing"]` v1（含 `v0.0.61` `text_ink.gd` `sans`/`zhuokai`、`12..256` px、`Transform2D` `affine`；支持 `configure_world_drawing` 与字典态 `configure_drawing`）+ `comp_entity_ink.gd`（`attach_entity_ink` / `set_entity_ink` 支持 `Array` 或状态 `Dictionary`） |
 | **World** | `plugins/areas.gd` | `builder.areas()` | `comp_area.gd`（`fus.area.v1`、`MAX_RADIUS_IN_CELLS = 256.0`）+ 与 `image_flip`/`scene_box` 冲突校验 |
-| **World (Cand)** | `plugins/entity_notes.gd` | `builder.entity_notes()` | `comp_entity_note.gd`（`MAX_TEXT_LENGTH = 32768`、图钉 `is_pin`；支持 `attach_note` 与字典/文本双态 `attach_entity_note`；`v0.0.60` `uncatalogued_candidate` 自动停放） |
+| **World (Cand)** | `plugins/entity_notes.gd` | `builder.entity_notes()` | `comp_entity_note.gd`（`MAX_TEXT_LENGTH = 32768`、图钉 `is_pin`；支持 `attach_note` 与字典/文本双态 `attach_entity_note`；`v0.0.60`–`v0.0.65` `uncatalogued_candidate` 自动停放） |
 | **Gameplay (9)** | `plugins/checklist.gd` | `builder.checklist()` | `world.modules.entries["checklist"]` schema 2（`MAX_ROWS = 128`、13 `RULE_EVENTS` 宏校验；**`^mod:` 来源标签默认 `allow_mod_source=true` 时放行并输出 `LogBus` 兼容性警告**，`allow_mod_source=false` 严格对齐实机宿主 `<FUS_REPO_DIR>/modules/checklist/book.gd` / `rule.gd` 仅认 `""` 或合法 `on <event>:` 宏，且 `Book.restore()` 会拒绝 `"mod:..."`） |
 | **Gameplay** | `plugins/resource_pool.gd` | `builder.resource_pool()` | `world.modules.entries["resource_pool"]` v1 定义 + `comp_resource_pool.gd` |
 | **Gameplay** | `plugins/character_roster.gd` | `builder.character_roster()` | `world.modules.entries["character_roster"]` v1 + `comp_character_roster_member.gd`（仅活体 `unit` 非 `map`） |
@@ -334,11 +336,90 @@ logger.unsubscribe(token)
 - 严格遵守 `<FUS_REPO_DIR>` 源码级宿主边界（不在 `DesktopScreen` 中越权挂载运行时 UI）；
 - 示范如何通过 `session.get_logger()`（`subscribe` / `unsubscribe` / `get_entries` / `get_warnings` / `attach_import_host`）与 `builder.get_module_registry()`（`check_and_warn` / `get_plugin_sdk`）审计多模块可用性、测试 `100 条 / 7000 字符` 警告上限保护、安全回放历史 `ERROR` 日志，并输出至 `host.report`、`host.warn`（`metadata.notes`）、引擎控制台流与可选的世界内 `checklist` + `drawing`（`text_ink`）看板。
 
-## 4. 客户端版本升级与真机验证标准流程
+## 4. 局内运行时 SDK（`shared/sdk/fu_runtime/`，`v2.0.0`）
 
-当 Steam Playtest 推送客户端更新后，按以下四步完成零波及适配与验收：
+针对 `fus.desktop-module.v1`（`local_only` 纯 `.zip` 直挂）与 `fus.plugin.v2`（`.fup` + `content.pck`），工作区新增了独立的运行时层 `shared/sdk/fu_runtime/`，**不改变 `fu_sdk/` 既有的 35 个脚本与公开接口**，并通过相对路径直接复用 `../fu_sdk/` 中的核心公共基础设施。
 
-1. **双源契约金丝雀巡检**：运行 `python shared/tools/fuvtt_cli.py inspect-client --source both`，同时比对 Steam 客户端 PCK / `Practice.dll` 与上游 Git `Practice` 分支的契约指纹。
-2. **单点演进 Adapter**：若底层世界字典或宿主回调发生变更，仅修改 `shared/sdk/fu_sdk/adapters/host_v1_adapter.gd`（或新增 `host_v2_adapter.gd` 并在 `v1.gd` 按宿主特征路由），保持 `v1.gd` 对外方法签名向后兼容。
-3. **一键全量重打包**：运行 `python shared/tools/fuvtt_cli.py build --all`，所有下游 `mods/*` 无需修改业务源码即可自动内嵌最新适配器并完成升级。
-4. **Godot 4.8-beta1 Mono 真机无头冒烟**：运行 `python shared/tools/fuvtt_cli.py verify-host <mod-name>`，验证脚本真实编译、导入回合执行及 `bytes_to_var(var_to_bytes(world))` 二进制往返无损一致性。
+### 4.1 架构与零重复复用清单（`runtime_manifest.json`）
+
+`shared/sdk/fu_runtime/runtime_manifest.json`（`schema = "fu_runtime.manifest.v1"`，`sdk_version = "2.0.0"`）声明了打包器 `packager.py` 需随局内模块一同打入归档的精确文件清单：
+
+- **6 个运行时脚本（`runtime_scripts`）**：`v2.gd`、`desktop_api_helper.gd`、`hook_helper.gd`、`slot_helper.gd`、`comp_helper.gd`、`network_helper.gd`。
+- **6 个复用的 `fu_sdk` 共享脚本（`shared_fu_sdk_scripts`）**：
+  - `utils/dag_cloner.gd`、`utils/bounded_cloner.gd`、`utils/value_utils.gd`、`utils/validation_utils.gd`
+  - `logging/log_bus.gd`
+  - `plugins/module_registry.gd`
+
+> [!IMPORTANT]
+> **打包路径对称性与零全局注册约束**：
+> 1. 全部 `fu_runtime/*.gd` 均遵循 `extends RefCounted`、UTF-8 无 BOM、LF 换行、**零 `class_name`**、**零 `preload(`** 与 **`WeakRef` 反向引用**（避免 `PCKPacker` 全局脚本冲突与 `ObjectDB` 泄漏）。
+> 2. 运行 `fuvtt_cli.py build <mod-name>` 时，打包器会从 `modules[0].entry_scene` 识别命名空间根（`mods/<plugin_id>/` 或 `external_modules/<plugin_id>/`），将 `fu_runtime/*.gd` 拷贝至 `<ns_root>/lib/fu_runtime/`，并将上述 6 个共享脚本拷贝至 `<ns_root>/lib/fu_sdk/`。
+> 3. `fu_runtime/v2.gd` 通过 `(get_script() as Script).resource_path.split("::")[0].get_base_dir()`（附 `get_stack()` 与开发相对路径回退）按 `../fu_sdk/<rel>` 解析共享脚本，同时检查 `ResourceLoader.exists(p) or FileAccess.file_exists(p)`，确保在开发态、`fus.desktop-module.v1`（`.zip`）及 `fus.plugin.v2`（`.pck`）下无需修改任何代码即可加载。
+
+### 4.2 局内模块动态加载模板
+
+在 `mods/<plugin_id>/module.gd` 或 `external_modules/<plugin_id>/feature_<plugin_id>.gd`（`extends ExtensionBase`）中按如下固定顺序加载 `fu_runtime/v2.gd`：
+
+```gdscript
+const _RUNTIME_PACKAGED_REL_PATH := "lib/fu_runtime/v2.gd"
+const _RUNTIME_DEV_REL_PATH := "../../../../shared/sdk/fu_runtime/v2.gd"
+
+func _load_runtime_sdk() -> RefCounted:
+	var self_scr := get_script() as Script
+	var base_dir: String = self_scr.resource_path.split("::")[0].get_base_dir() if self_scr != null else ""
+	var candidates: Array[String] = []
+	if not base_dir.is_empty():
+		candidates.append(base_dir.path_join(_RUNTIME_PACKAGED_REL_PATH).simplify_path())
+		candidates.append(base_dir.path_join(_RUNTIME_DEV_REL_PATH).simplify_path())
+	candidates.append("res://shared/sdk/fu_runtime/v2.gd")
+	candidates.append("shared/sdk/fu_runtime/v2.gd")
+	for path: String in candidates:
+		if ResourceLoader.exists(path) or FileAccess.file_exists(path):
+			var loaded := load(path) as Script
+			if loaded != null:
+				var inst: Variant = loaded.new()
+				if inst is RefCounted:
+					return inst as RefCounted
+	return null
+```
+
+### 4.3 `fu_runtime/v2.gd` 门面与 5 大 Helper 摘要
+
+- **`v2.gd`（`SDK_VERSION = "2.0.0"`）**：
+  - 常量：`RUNTIME_SCHEMA_DESKTOP = "fus.desktop-module.v1"`、`RUNTIME_SCHEMA_WORLD = "fus.plugin.v2"`。
+  - 工厂方法：`create_logger(options)` / `get_logger()` / `set_logger()`、`create_module_registry(log_bus)` / `get_module_registry()`、`create_desktop_api_helper(context_or_api, log_bus)`、`create_hook_helper(context, log_bus)`、`create_slot_helper(context, log_bus)`、`create_comp_helper(context, log_bus)`、`create_network_helper(module_id, local_only, context, log_bus)`、`get_util_script(util_name)`。
+  - 标量/校验透传：`coerce_bool`、`coerce_int`、`coerce_float`、`coerce_string`、`as_str`、`coerce_color_value`、`is_valid_uid`、`is_valid_hex64`、`component_id_from_script`、`sanitize_line_text`、`safe_clone_dict`、`has_cycle`。
+- **`desktop_api_helper.gd`（封装 `DesktopApiService` 26 个方法）**：
+  - `bind(context_or_api)` / `unbind()` / `get_api()` / `is_available()`；
+  - 身份权限：`get_desktop`、`is_gm`、`network_role`、`local_peer_id`、`local_player_id`、`joined_players`、`can_command_entity`；
+  - 场景相机：`active_scene_uid/name`、`active_floor_uid/id`、`world_units_per_cell`（`< 8.0` 回退 `64.0`）、`screen_to_world`、`world_to_screen`、`camera_position`、`camera_zoom`、`focus_camera`、`focus_entity`、`current_mode`、`set_mode`；
+  - 实体、生命与存档：`find_entity`、`get_entities`、`selected_entities`、`read_entity_vitals` / `is_vitals_masked`（未授权非 GM 自动返回 `masked: true`）、`request_roll`、`read_saved_module_entry`（仅 GM 可读，非 GM 返回 `{}`）。
+- **`hook_helper.gd`（`HookIds` 61 项内置事件 + 自定义命名空间事件）**：
+  - `is_builtin_hook`、`is_custom_namespaced`（`^(ext|mod)\.[a-z0-9_]+(\.[a-z0-9_]+)+$`、`<= 128` 字符）、`expected_arity`（自定义事件固定 arity `1` 字典载荷）、`is_cancellable`（`mode.pre_change`、`input.*` 共 4 项）；
+  - `build_custom_hook_id(prefix, plugin_id, event_name)`、`subscribe(hook_id, callback, priority)`（校验参数个数）、`emit` / `emit_custom`（`hook_helper` 执行环检测与参数校验；宿主 `HookBus` 拦截 `configuration_is_publishing` 期间派发）、`revert_tracked()` / `unbind()`。
+- **`slot_helper.gd`（世界覆盖层、节点挂载与桌面 UI 槽位）**：
+  - `world.overlays`（`below_entities` / `above_entities` / `above_fog`，`make_world_overlay_spec` / `register_world_overlay`）、`mount_node(parent, child, index)`（退出或停用自动 `deactivate()` + `queue_free()`）；
+  - `ui.desktop_panels`、`ui.module_settings`（校验 `Control` + `bind_provider -> true` + `deactivate`）、`ui.mode_bar`（禁覆写 `select`/`edit`/`build`、要求点号 ID、`safe_mode_enter_result` 强制 `on_enter` 显式返回 `true`）、`ui.entity_actions`（`surfaces` 含 `action_bar`/`context_wheel`、`wheel_ring`/`wheel_slot` `0..31`）、`ui.canvas_actions`、`ui.entity_properties`。
+- **`comp_helper.gd`（`CompBase` 与实体组件目录契约）**：
+  - `make_namespaced_comp_id`（`<plugin_id>__<name>`）、`is_valid_component_script_path`（拦截 `"visual"`/`"permission"` 覆写）、`make_component_spec` / `register_component`（完整 15 字段，强制 `entity_local_content -> network_scope == "peer"` 及 `recipient_component_rows -> entity_local_content`）；
+  - `is_pure_data`（O(n) 记忆化校验，对齐 `StateValue.is_data()` 32 层上限）、`build_public_state`（`public_state(state, peer)` 脱敏助手）、`does_suppress` / `has_symmetric_conflict`、`collect_active_components`、`make_field_edit_payload` / `make_numeric_edit_payload`。
+- **`network_helper.gd`（`WorldModuleState` 三阶段持久化与 `network.*` 槽位）**：
+  - `configure(module_id, local_only, context)`（`local_only == true` 时注册 `network.actions` / `network.projections` / `network.presentations` 均自动拦截返回 `local_only_network_disabled`）；
+  - `validate_action_provider`（3 方法）、`validate_projection_provider`（`projection_changed` 信号 + 8 方法 + `replica_presentation_only == true`）、`validate_presentation_provider`（2 方法），并强制 `spec.id == MODULE_ID`；
+  - `estimate_bounded_bytes`（`16 MiB` 单条 / `24 MiB` 总量 / `32` 层深度）、`prepare_entry`、`prepare_three_phase_state`、`clone_state_isolated`、`notify_module_content_changed`、`publish_module_state`。
+
+### 4.4 局内双协议参考模板
+
+- **`mods/_template-desktop-module/`（`fus.desktop-module.v1`）**：纯 `.zip`、`local_only: true`、`mods/template_desktop_module/module.tscn` + `module.gd` + `overlay_canvas.gd`，演示 `desktop_api`、`HookBus`、自定义事件、`world.overlays` 与 `mount_node`。
+- **`mods/_template-world-plugin/`（`fus.plugin.v2`）**：`.fup` + `content.pck`、`external_modules/template_world_plugin/feature_template_world_plugin.tscn` + `.gd`、`comp_template_world_plugin__marker.*`、`marker_component_page.*`、`marker_sidebar_panel.*`、`marker_settings_page.*`、`marker_world_overlay.gd`，演示完整组件、撤销栈、三阶段持久化、联机同步与桌面槽位。
+
+---
+
+## 5. 客户端版本升级与真机验证标准流程
+
+当 Steam Playtest 推送客户端更新或本地修改 SDK 后，按以下四步完成双模验收：
+
+1. **双源契约金丝雀巡检**：运行 `python shared/tools/fuvtt_cli.py inspect-client --source both`，同时比对 Steam 客户端 PCK / `Practice.dll` 与上游 `<FUS_REPO_DIR>` Git 分支指纹。
+2. **分层单点演进**：局外导入协议变更仅修改 `fu_sdk/adapters/` 或对应 `fu_sdk/plugins/*.gd`；局内运行时接口变更仅修改 `fu_runtime/*.gd`（保持 `fu_sdk/` 35 脚本及共用工具契约向后兼容）。
+3. **一键校验与重打包**：运行 `python shared/tools/fuvtt_cli.py validate --all --include-template` 与 `python shared/tools/fuvtt_cli.py build --all --include-template`（`.fup` 模块需配置 `GODOT_BIN`）。
+4. **双模真机无头与宿主联动验证**：运行 `python shared/tools/fuvtt_cli.py verify-host <mod-name> --fus-repo`，同时验证 GDScript 编译、局外导入往返 / 局内三阶段持久化与真实 FUS 宿主契约联动（确认零 `ObjectDB` 泄漏）。

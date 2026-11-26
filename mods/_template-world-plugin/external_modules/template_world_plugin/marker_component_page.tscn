@@ -1,0 +1,45 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://external_modules/template_world_plugin/marker_component_page.gd" id="1_page"]
+
+[node name="MarkerComponentPage" type="VBoxContainer"]
+script = ExtResource("1_page")
+theme_override_constants/separation = 8
+
+[node name="RangeRow" type="HBoxContainer" parent="."]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="RangeLabel" type="Label" parent="RangeRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+text = "标记半径"
+
+[node name="MinusBtn" type="Button" parent="RangeRow"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(32, 32)
+layout_mode = 2
+text = "-"
+
+[node name="RangeValue" type="Label" parent="RangeRow"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(56, 0)
+layout_mode = 2
+horizontal_alignment = 1
+text = "2 格"
+
+[node name="PlusBtn" type="Button" parent="RangeRow"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(32, 32)
+layout_mode = 2
+text = "+"
+
+[node name="TitleEdit" type="LineEdit" parent="."]
+unique_name_in_owner = true
+layout_mode = 2
+placeholder_text = "输入标记名称（回车确认）"
+
+[node name="SecretCheck" type="CheckBox" parent="."]
+unique_name_in_owner = true
+layout_mode = 2
+text = "主持暗藏（仅主持与受权玩家可见）"

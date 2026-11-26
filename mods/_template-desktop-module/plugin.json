@@ -1,0 +1,38 @@
+{
+  "schema": "fus.desktop-module.v1",
+  "host_api": 2,
+  "scope": "desktop",
+  "id": "template_desktop_module",
+  "version": "0.1.0",
+  "name": "Template Desktop Module",
+  "description": "纯本机桌面表现模块模板（fus.desktop-module.v1 / local_only / 纯 ZIP 直挂）：基于 fu_runtime SDK 访问 desktop_api、订阅 HookBus 内置事件与自定义命名空间事件，并挂载 world.overlays 世界覆盖层与 ExtensionContext.mount_node 桌面横幅。",
+  "modules": [
+    {
+      "id": "mod.template_desktop_module",
+      "display_name": "Template Desktop Module",
+      "entry_scene": "res://mods/template_desktop_module/module.tscn",
+      "version": 1,
+      "network_version": 0,
+      "local_only": true,
+      "isolated_lifecycle": true,
+      "requires": [],
+      "conflicts": [],
+      "description": "纯本机桌面表现模块模板：演示 desktop_api 生命/实体/GM 存档读取、HookBus 战局事件监听与自定义事件、world.overlays 与 mount_node 生命周期管理。",
+      "disable_effect": "立即撤回本机顶部横幅层与世界覆盖层画布，零存档写入、零联机版本握手。"
+    }
+  ],
+  "settings": [
+    {
+      "id": "enable_overlay",
+      "type": "bool",
+      "label": "启用世界波纹覆盖层",
+      "default": true
+    },
+    {
+      "id": "enable_banner",
+      "type": "bool",
+      "label": "启用屏幕顶部播报横幅",
+      "default": true
+    }
+  ]
+}

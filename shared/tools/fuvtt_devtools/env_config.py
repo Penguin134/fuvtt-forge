@@ -10,7 +10,7 @@ from typing import Mapping
 
 
 DEFAULT_WORKSPACE_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_FUS_SOURCE_REF = "origin/codex/playtest-v060-20261122"
+DEFAULT_FUS_SOURCE_REF = "origin/codex/v065-unified-20261125"
 
 REDACTED_INSTALL_PLACEHOLDER = "<FUVTT_INSTALL_DIR>"
 REDACTED_FUS_REPO_PLACEHOLDER = "<FUS_REPO_DIR>"
@@ -200,6 +200,14 @@ class WorkspaceConfig:
     fus_source_ref: str = DEFAULT_FUS_SOURCE_REF
     godot_bin: Path | None = None
     raw_env: Mapping[str, str] = field(default_factory=dict, repr=False)
+    runtime_sdk_dir: Path | None = None
+
+    @property
+    def resolved_runtime_sdk_dir(self) -> Path:
+        """Resolve `shared/sdk/fu_runtime` path (defaulting relative to `workspace_root`)."""
+        if self.runtime_sdk_dir is not None:
+            return self.runtime_sdk_dir
+        return self.workspace_root / "shared" / "sdk" / "fu_runtime"
 
     def redact_path(self, text: str | Path) -> str:
         """Redact FUVTT_INSTALL_DIR, FUS_REPO_DIR, and GODOT_BIN from log or status text."""
@@ -353,4 +361,5 @@ def load_config(
         fus_source_ref=fus_source_ref,
         godot_bin=godot_bin,
         raw_env=merged,
+        runtime_sdk_dir=ws_root / "shared" / "sdk" / "fu_runtime",
     )

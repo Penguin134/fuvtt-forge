@@ -3,9 +3,9 @@
 > [!WARNING]
 > **Playtest 内测阶段免责声明**  
 > 当前处于 Steam Playtest 内测阶段，后续 Mod 接口可能存在变更。本文档基于本地 Steam 客户端解包与官方只读源码分支核验沉淀。  
-> **实测验证基准**：现役 `Practice` 主线 `v0.0.60`（Git `origin/codex/playtest-v060-20261122`，`cc3d43a5`，`2026-11-22`）/ Steam Playtest `v0.0.57`–`v0.0.62`（本地端 `v0.0.60`，Commit `cc3d43a`）  
+> **实测验证基准**：现役 `Practice` 主线 `v0.0.65`（Git `origin/codex/v065-unified-20261125`，`468999d4`，`2026-11-25`）/ 向下兼容 `v0.0.57`–`v0.0.62`  
 > **底盘引擎**：`Godot Engine v4.8.beta1.mono.official` (64-bit) + `.NET 10 CoreCLR` (`Practice.dll`)  
-> **验证日期**：`2026-11-24`
+> **验证日期**：`2026-11-25`
 
 ---
 
@@ -15,26 +15,26 @@
 
 | 维度 | 现役生产主线：`Practice`（Steam Playtest 真实主线） | 早期已替代原型线：`FUS-F2`（仅供前瞻设计参考） |
 | :--- | :--- | :--- |
-| **Git 分支与时间** | `origin/codex/playtest-v060-20261122`（`cc3d43a5`，**`2026-11-22`**，`v0.0.60`，与本机 Steam 客户端 **精确一致**）；早期同线对照分支为 `origin/codex/fuvtt-project-sync`（`467be9e3` / `282aee64`，`v0.0.56`） | 远端 `origin/HEAD` 默认分支：`codex/post-dnd-followups`（`ff4a1600`，**`2026-10-06`**，回落版本 `v0.1.80`）——**早于 `Practice` 线约 1.5 个月** |
+| **Git 分支与时间** | `origin/codex/v065-unified-20261125`（`468999d4`，**`2026-11-25`**，`v0.0.65`）；早期同线基准为 `origin/codex/playtest-v060-20261122`（`cc3d43a5`，`v0.0.60`）与 `origin/codex/fuvtt-project-sync`（`v0.0.56`） | 远端 `origin/HEAD` 默认分支：`codex/post-dnd-followups`（`ff4a1600`，**`2026-10-06`**，回落版本 `v0.1.80`）——**早于 `Practice` 线约 1.5 个月** |
 | **引擎与原生栈** | **Godot `4.8.beta1.mono`** + **`.NET 10 CoreCLR`**（`Practice.csproj` → `Practice.dll`） | **Godot `4.8-dev4` 非 Mono** + 3 个 C++ GDExtension（`native/fus_file_commit`、`fus_history_geometry`、`fus_surfacebox`）+ 独立 `.NET 8 NativeAOT` 骰子子进程 |
-| **外部插件契约** | **`fus.session-plugin.v1`**（`host_api = 1`，`scope = "session"`），离线 `RefCounted` 会话导入器，由 C# `services/plugins/PluginPackageJob.cs` 强校验 | `f2.feature_plugin.v1`（`HostBridge.API_VERSION = 7`），支持外部运行时桌面 `FeatureBase`（如 `plugin_packages/dnd_sdr`），全 GDScript `FeaturePluginCatalog` 事务管理 |
-| **插件存储布局** | `FUS_Data/session_plugins/`（`registry.json` + `packages/<id>/<zip_sha256>/` + `cache/<id>/`） | `FUS_Data/plugins/`（`plugin_manifests.json` + `plugins/<id>/` + `_generation_store/`） |
-| **本仓库定位** | **唯一生产目标线**：`fu_sdk`、`mods/_template/`、`shared/tools/` 100% 锚定此线 | **严禁生成其生产脚手架**：仅将 `dnd_sdr` 等精华设计归档至文档前瞻参考节，不用于当前 Steam 客户端 |
+| **外部插件契约** | 三协议并行：**`fus.session-plugin.v1`**（局外会话导入）、**`fus.desktop-module.v1`**（局内纯本机 `.zip`）与 **`fus.plugin.v2`**（局内 `.fup` + `content.pck`），统一由 C# `PluginPackageJob.cs` 强校验 | `f2.feature_plugin.v1`（`HostBridge.API_VERSION = 7`），旧版 `FeaturePluginCatalog` 事务管理（**无法在当前客户端加载**） |
+| **插件存储布局** | `FUS_Data/session_plugins/`（`registry.json` + `packages/<id>/<sha256>/` + `cache/<id>/`） | `FUS_Data/plugins/`（`plugin_manifests.json` + `plugins/<id>/` + `_generation_store/`） |
+| **本仓库定位** | **唯一生产目标线**：`fu_sdk`、`fu_runtime`、`mods/_template*`、`shared/tools/` 100% 锚定此线 | **严禁生成其生产脚手架**：仅将 `dnd_sdr` 等设计归档至文档前瞻参考节，不用于当前客户端 |
 
 > [!CAUTION]
-> **官方源码仓只读红线**：通过 `.env.local` 配置 `FUS_REPO_DIR` / `FUS_SOURCE_REF=origin/codex/playtest-v060-20261122` 时，所有工具与开发者仅允许执行只读查询（如 `git -C <FUS_REPO_DIR> show <ref>:<path>`），**严禁对 `<FUS_REPO_DIR>` 执行文件写入或 `git checkout`**。
+> **官方源码仓只读红线**：通过 `.env.local` 配置 `FUS_REPO_DIR` / `FUS_SOURCE_REF=origin/codex/v065-unified-20261125` 时，所有工具与开发者仅允许执行只读查询（如 `git -C <FUS_REPO_DIR> show <ref>:<path>` 或 `git archive`），**严禁对 `<FUS_REPO_DIR>` 执行文件写入或 `git checkout`**。
 
 ---
 
-## 2. 当前基准 Playtest 客户端与 `v0.0.53` → `v0.0.60` 演进记录
+## 2. 当前基准 Playtest 客户端与 `v0.0.53` → `v0.0.65` 演进记录
 
 ### 2.1 基准环境参数
 
 | 配置项 | 实测具体参数 | 来源与定位依据 |
 | :--- | :--- | :--- |
 | **Steam App ID** | `3177780` (Fu vtt Playtest) | Steam 注册信息 |
-| **Steam 线上客户端版本** | `v0.0.60`（Commit `cc3d43a`，`2026-11-22`，PCK `2,799` 项） | 解包 `<FUVTT_INSTALL_DIR>/FUS.exe` 内 `data/build_identity.json` |
-| **官方源码对照基线** | `v0.0.60`（Git `cc3d43a5`，`2026-11-22`） | `origin/codex/playtest-v060-20261122` |
+| **Steam 线上客户端版本** | `v0.0.65`（现役统一主线，2026-11-25；前序 PCK 基线 `v0.0.60` / `cc3d43a` 为 `2,799` 项） | 解包 `<FUVTT_INSTALL_DIR>/FUS.exe` 内 `data/build_identity.json` |
+| **官方源码对照基线** | `v0.0.65`（Git `468999d4`，`2026-11-25`；前序 `v0.0.60` 基线为 `cc3d43a5`） | `origin/codex/v065-unified-20261125` |
 | **底盘引擎与运行时** | `Godot Engine v4.8.beta1.mono.official` + `.NET 10` (`net10.0`) | `Practice.csproj`、`Practice.runtimeconfig.json` |
 | **核心 C# 业务程序集** | `data_Practice_windows_x86_64/Practice.dll` | 客户端安装目录 |
 | **本地运行数据目录** | `FUS_Data/`（含 `.fus-storage.json`、`session_plugins/`、`local_desktop/`） | `services/platform_runtime.gd`、`services/storage_bootstrap.gd` |
@@ -65,16 +65,24 @@
 
 ### 2.4 `v0.0.58`–`v0.0.62` Steam Playtest 补丁增量与 SDK 适配
 
-结合 Steam Playtest（`appid=4880170`）`v0.0.57`–`v0.0.62` 更新记录与 `<FUS_REPO_DIR>`（`cc3d43a5`）核对：
+结合 Steam Playtest（`appid=4880170`）`v0.0.57`–`v0.0.62` 更新记录核对：
 
-1. **`v0.0.58`–`v0.0.59` 新增玩法与角色模块**：
-   - 落地 `dice`（`schema_version = 5`、`dice_workspace` `v4`）、`candidate_initiative`（`schema = 2`）、`backpack`（16 槽位背包）、`resource_pool`（`v1`）、`character_roster`（`v1`）、`checklist`（`schema = 2` + 13 事件规则解析）与 `dnd_opportunity`（`v1` 2014/2024 卡片）。
-2. **`v0.0.60`–`v0.0.61` 地图、迷雾与绘制增强**：
-   - `scene_box` 毕业转正为内置可选模块（`modules/scene_box/`）；
-   - `simple_fog` 扩展 `fog_config.gd` v2（14 项效果与阴影参数）与 `"SFH2"` 探索历史字节；`map_fog_editor`、`grid_alignment` 自动网格检测及 `drawing` 文字工具（`text_ink.gd`，支持 `sans`/`zhuokai` 与 `12..256` px、`Transform2D` `affine`）上线。
-3. **`v0.0.61`–`v0.0.62` Playtest 临时屏蔽与旧存档兼容（`campaign_time` & `dnd_opportunity`）**：
-   - 为稳定 Playtest 体验，客户端通过 `DesktopFeatureCatalog` 的 `activation_blocked_reason` 与 `module_configuration.gd:36-48, 220-222` 临时阻止在界面启用 `campaign_time` 与 `dnd_opportunity`（强制 `enabled = false`），同时 `FeatureManager` 与 `network_module_contract.gd:105-106` 显式保留已存档的模块状态且不阻断进桌；
-   - `shared/sdk/fu_sdk/plugins/module_registry.gd`（`ModuleRegistry`）与对应分脚本 `plugins/campaign_time.gd`、`plugins/dnd_opportunity.gd` 已同步标注 `status = "playtest_blocked"`，在写入时自动经 `LogBus` 输出明确警告并遵循 `"preserve"`（保留）/ `"skip"`（跳过）策略。
+1. **`v0.0.58`–`v0.0.59` 新增玩法与角色模块**：落地 `dice`（`schema_version = 5`、`dice_workspace` `v4`）、`candidate_initiative`（`schema = 2`）、`backpack`（16 槽位背包）、`resource_pool`（`v1`）、`character_roster`（`v1`）、`checklist`（`schema = 2` + 13 事件规则解析）与 `dnd_opportunity`（`v1` 2014/2024 卡片）。
+2. **`v0.0.60`–`v0.0.61` 地图、迷雾与绘制增强**：`scene_box` 毕业转正；`simple_fog` 扩展 `fog_config.gd` v2 与 `"SFH2"` 探索历史字节；`drawing` 文字工具（`text_ink.gd`，支持 `sans`/`zhuokai` 与 `12..256` px、`Transform2D` `affine`）上线。
+3. **`v0.0.61`–`v0.0.62` Playtest 临时屏蔽与旧存档兼容**：`campaign_time` 与 `dnd_opportunity` 在面板临时禁用（`playtest_blocked`），但保留旧存档状态不阻断进桌；`ModuleRegistry` 同步支持 `"preserve"`/`"skip"` 策略。
+
+### 2.5 `v0.0.65` (`468999d4`, `2026-11-25`) 统一局内扩展架构上线
+
+1. **三协议插件并行（`PluginPackageJob.cs` + `session_plugins.gd`）**：
+   - 在保留 `fus.session-plugin.v1` 100% 向后兼容的基础上，正式开放 **`fus.desktop-module.v1`**（`local_only: true`、`network_version: 0`、纯 `.zip` 直挂）与 **`fus.plugin.v2`**（`.fup` 含 `content.pck` (`GDPC`) + `SHA256SUMS.txt`、支持 `local_only: false` 联机组件与持久化）。
+   - `PluginPackageJob.EnsureMountPack()` 为纯 `.zip` 局内包自动合成 `cache/<id>/<sha256>.zip`，`session_plugins._sync_world_modules()` 通过 `ProjectSettings.load_resource_pack(pck_path, false)` 挂载资源并经 `DesktopFeatureCatalog.set_external_entries()` 动态注册到开桌列表（参考样本：`crit_vfx_sample` 与 `aura_rings_sample`）。
+2. **`DesktopApiService`、`HookIds` 扩容与自定义命名空间事件**：
+   - 暴露 `"desktop_api"` 服务（26 个只读查询与轻交互方法，含非 GM 脱敏 `read_entity_vitals` 与 GM 专用 `read_saved_module_entry`）。
+   - `HookIds.TABLE` 由 48 项扩充至 **61** 项，并开放 `^(ext|mod)\.[a-z0-9_]+(\.[a-z0-9_]+)+$` 自定义命名空间事件（arity `1` `Dictionary`）。
+3. **局内组件披露、撤销栈、持久化与桌面槽位**：
+   - `CompBase` 支持外部注册（`comp_<plugin_id>__<name>.gd`，15 字段 `ComponentCatalog`）、`public_state(state, peer)` 联机脱敏与支配压制；`EntityComponentPage` 接入 `EditModeController` 撤销重做；
+   - `WorldModuleState` 开放三阶段持久化（`prepare_module_state` / `apply_module_state` / `serialize_module_state`，`StateValue.is_data()` 深度 `<= 32`）；开放 `world.overlays`、`ExtensionContext.mount_node`、`ui.desktop_panels`、`ui.module_settings`、`ui.mode_bar`（`on_enter` 必须返回 `true`）、`ui.entity_actions`、`ui.canvas_actions`、`ui.entity_properties` 与 `network.actions`/`network.projections`（仅 `fus.plugin.v2`）。
+4. **内置模块与工作区同步**：`DesktopFeatureCatalog.optional_entries()` 由 21 项增至 **26** 项（新增 `entity_box`、`avg`、`dnd_character_sheet`、`monster_compendium`、`stat_bubbles`）；本仓库同步落地 `shared/sdk/fu_runtime/`（`v2.0.0`）与 `mods/_template-desktop-module/`、`mods/_template-world-plugin/`。
 
 ---
 
@@ -99,31 +107,25 @@ $$\text{Physical File Offset} = \text{PCK\_START} + \text{FILE\_BASE} + \text{EN
 
 ---
 
-## 4. 现役 `Practice` 扩展体系“内外双轨隔离”现状
+## 4. 现役 `Practice` 扩展体系双模开放架构（`v0.0.65`）
 
-经 `origin/codex/playtest-v060-20261122` 源码与 `docs/extension-source.json` 核实，现役 `Practice` 线从早期 FUS 快照精简移植了 `ExtensionBase` / `ExtensionContext` / `SlotRegistry` / `HookBus` / `DesktopFeatureCatalog` 底座，但仍保持严格的**“内外双轨隔离”**：
+经 `origin/codex/v065-unified-20261125`（`468999d4`）核实，现役 `Practice` 线已由早期“局外导入单轨”演进为“**局外导入 + 局内运行时双轨并行**”：
 
-1. **外部唯一开放动态加载轨（`session_plugins`）**：
-   - 契约固定为 `fus.session-plugin.v1`（`host_api = 1`、`scope = "session"`），挂载于 `FUS_Data/session_plugins/`。
-   - 仅在会话管理页触发导入时于 `WorkerThreadPool` 瞬态实例化 `RefCounted`，产出静态 `.world` 存档后即释放。
-2. **内部桌面运行时模块底座（`DesktopFeatureCatalog`，静态封闭）**：
-   - `scenes/extension/desktop_feature_catalog.gd` 硬编码 **9 核心 + 21 可选**（共 30 项）内置模块（`res://modules/...`、`res://scenes/...`），不扫描任何外部目录。
-   - 全仓 `ProjectSettings.load_resource_pack` 调用次数为 **0**，不支持第三方 `.pck` 动态挂载。
-3. **Steam 创意工坊（`ISteamUGC`）与联机模块白名单**：
-   - `scenes/board/networking/steam_runtime.gd` 仅封装账号、好友、大厅与 `SteamMultiplayerPeer` P2P 传输，**`ISteamUGC` 相关调用为 0**。
-   - 桌面联机虽已内置 `network.actions`、`network.projections`、`network.presentations` 三套结构化通道，但 `scenes/board/networking/network_module_contract.gd` 在握手与存档预检阶段强校验模块 ID 与 `network_version` 均须命中 `DesktopFeatureCatalog.optional_entries()` 及 `ResourceLoader.exists(path)`，第三方无法注册自定义运行时模块或网络协议。
-4. **运行时 UI 隔离实证与官方替代方案（`mods/sdk-log-console/`）**：
-   - `<FUS_REPO_DIR>` 源码级实证表明外部 `fus.session-plugin.v1` 无法向 `DesktopScreen` 挂载任何运行时 `Control`/`Window`/`ui.desktop_panels` 面板（详见 `shared/docs/plugin-lifecycle.md` §3.4）。
-   - 控制台日志诊断需求应采用 `mods/sdk-log-console/` 范式：由 `RefCounted` 会话插件订阅 `LogBus` 与调用 `ModuleRegistry`，安全输出至 `host.report`、`host.warn`（`metadata.notes` 受 `100 / 7000` 保护）、引擎控制台流与可选世界内 `checklist`/`drawing` 看板。
+1. **局外会话导入轨（`fus.session-plugin.v1`）**：
+   - 保持 `host_api = 1`、`scope = "session"`、`RefCounted` `entry.gd` 于 `WorkerThreadPool` 瞬态执行，产出 `.world` 存档；依然禁止向 `DesktopScreen` 挂载任何 UI（控制台审计继续采用 `mods/sdk-log-console/` 范式）。
+2. **局内纯本机表现轨（`fus.desktop-module.v1`）与局内联机世界轨（`fus.plugin.v2`）**：
+   - 由 `PluginPackageJob.cs`（含 `EnsureMountPack()`）与 `session_plugins.gd`（`ProjectSettings.load_resource_pack(pck_path, false)`）统一挂载 `res://mods/<id>/` 或 `res://external_modules/<id>/`，并经 `DesktopFeatureCatalog.set_external_entries()` 进入桌面扩展管线；
+   - `fus.desktop-module.v1` 强制 `local_only: true`、`network_version: 0`，禁止注册 `network.*` 槽位且被 `NetworkModuleContract` 自动跳过；`fus.plugin.v2` 支持 `.fup`（`content.pck` + `SHA256SUMS.txt`）、`CompBase`、`WorldModuleState` 与 `network.actions`/`projections`；
+   - 两类局内模块均严禁包含 `.dll`/`.exe`/`.gdextension` 等二进制及全局 `class_name`（`ISteamUGC` 仍未启用，统一通过 HTTP/HTTPS URL 或本地 `sync` 安装）。
 
 ---
 
-## 5. 防腐层 SDK、双源金丝雀巡检与真机无头验证流程
+## 5. 双模共享 SDK、双源金丝雀巡检与真机无头验证流程
 
-### 5.1 构建期自动内嵌防腐层（`shared/sdk/fu_sdk/`）
+### 5.1 构建期自动内嵌双模 SDK（`fu_sdk` + `fu_runtime`）
 
-- 由于无创意工坊前置依赖机制，所有业务插件统一面向 `shared/sdk/fu_sdk/v1.gd`（`v1.3.0`）编程；当前 `shared/sdk/fu_sdk/` 采用模块化布局共 **35** 个 `.gd` 脚本（含核心门面 `v1.gd`、`adapters/host_v1_adapter.gd`、R3 日志总线 `logging/log_bus.gd` (`LogBus`)、R2 模块注册表 `plugins/module_registry.gd` (`ModuleRegistry`)、**23** 个独立原生插件分脚本 `plugins/<module_id>.gd`、**4** 个 `modules/*.gd` 可复用子模块，以及 **4** 个 `utils/*.gd` 纯叶子公共静态工具脚本）。`fuvtt_cli.py build` 在打包期会自动将上述全部 `35` 个脚本递归嵌入每个插件 ZIP 的 `lib/fu_sdk/`。
-- 当宿主升级底层格式时，仅需单点修改 `shared/sdk/fu_sdk/adapters/host_v1_adapter.gd` 或对应 `shared/sdk/fu_sdk/plugins/*.gd` 并运行 `build --all`。
+- **局外 `shared/sdk/fu_sdk/`（`v1.3.0`）**：保持 **35** 个 `.gd` 脚本（含 `v1.gd`、`adapters/host_v1_adapter.gd`、`logging/log_bus.gd`、`plugins/module_registry.gd`、23 个独立分脚本、`4` 个 `modules/*.gd` 与 `4` 个 `utils/*.gd`）。
+- **局内 `shared/sdk/fu_runtime/`（`v2.0.0`）**：包含 `6` 个运行时脚本（`v2.gd` + 5 大 helper）与 `runtime_manifest.json`，直接通过相对路径复用 `../fu_sdk/utils/*`、`logging/log_bus.gd` 与 `plugins/module_registry.gd`，打包时注入 `<ns_root>/lib/{fu_runtime,fu_sdk}/`。
 
 ### 5.2 Steam PCK + Git 源码双源金丝雀巡检
 
@@ -134,8 +136,8 @@ $$\text{Physical File Offset} = \text{PCK\_START} + \text{FILE\_BASE} + \text{EN
 python shared/tools/fuvtt_cli.py inspect-client --extract --source both
 ```
 
-- **Steam 轨**监控 `data/build_identity.json`、`data_Practice_windows_x86_64/Practice.dll`、`FUS_Data/.fus-storage.json` 及 PCK 内 **45** 个关键契约文件（`CONTRACT_WATCH_FILES`：除核心 `session_plugins.gdc`、`plugin_import.gdc`、`import_bridge.gdc`、`world_defaults.gdc`、`scene_repository.gdc`、`world_module_state.gdc`、`desktop_feature_catalog.gdc`、`obstacle_shape_data.gdc`、`scene_box/*.gdc` 外，现已同步覆盖 `feature_manager.gdc`、`entity_state_codec.gdc`、`board_token.gdc`、`desktop_panel_host.gdc`、`diagnostic_logger.gdc` 与 `simple_fog` / `drawing`（含 `text_ink.gdc`）/ `grid_alignment` / `checklist` / `backpack` / `resource_pool` / `character_roster` / `campaign_time` / `dnd_opportunity` / `dice` / `initiative` / `portal` / `areas` / `drag_movement` / `image_flip` / `follow` / `entity_notes` 等全部新增模块 `.gdc`）。
-- **Git 只读轨**通过 `git -C <FUS_REPO_DIR> show <FUS_SOURCE_REF>:<path>` 提取 **46** 份核心与模块契约源码（`GIT_PRACTICE_WATCH_FILES`：`project.godot`、`Practice.csproj`、`PluginPackageJob.cs`、`PluginPackageJob.Probe.cs`、`fobr_world_import/plugin.json` 及与上述 PCK 对应的全部 `.gd` 源码指纹），直接输出 Steam 线上版 vs Git 源码版代差报告。
+- **Steam 轨**监控 `data/build_identity.json`、`data_Practice_windows_x86_64/Practice.dll`、`FUS_Data/.fus-storage.json` 及 PCK 内 **52** 项基线核心/模块 `.gdc`（`CONTRACT_WATCH_FILES`）+ **12** 项 `v0.0.65` 局内模块宿主 `.gdc`（`V065_CONTRACT_WATCH_FILES`）。
+- **Git 只读轨**通过 `git -C <FUS_REPO_DIR> show <FUS_SOURCE_REF>:<path>` 提取 **73** 份核心与局内契约源码（`GIT_PRACTICE_WATCH_FILES`），输出 Steam 线上版 vs Git 源码版代差报告。
 
 ### 5.3 Godot 4.8-beta1 Mono 真机无头冒烟验证（`verify-host`）
 
@@ -153,7 +155,7 @@ python shared/tools/fuvtt_cli.py verify-host <mod-name>
 ## 6. 已知限制、兼容性踩坑与环境配置规范
 
 1. **GDScript 字节码（`.gdc`）与 C# 程序集（`Practice.dll`）**：
-   - Steam PCK 中逻辑脚本以 Godot 4.8 `.gdc` 字节码分发，C# 核心编入 `Practice.dll`；而通过 `.env.local` 关联的 `<FUS_REPO_DIR>` (`origin/codex/playtest-v060-20261122`) 可直接只读查阅等价明文 `.gd` / `.cs` 源码。
+   - Steam PCK 中逻辑脚本以 Godot 4.8 `.gdc` 字节码分发，C# 核心编入 `Practice.dll`；而通过 `.env.local` 关联的 `<FUS_REPO_DIR>` (`origin/codex/v065-unified-20261125`) 可直接只读查阅等价明文 `.gd` / `.cs` 源码。
 2. **UTF-8 BOM 行为边界**：
    - C# `PluginPackageJob.cs` 读取 `plugin.json` 与 `registry.json` 时会自动剥离 UTF-8 BOM；但本仓库所有受控源码、清单与文档一律保持 **UTF-8 无 BOM**，并在插件解析未知外部文本时主动剥离首字符 `0xFEFF`。
 3. **大体积几何与两阶段预览**：

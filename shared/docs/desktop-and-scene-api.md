@@ -2,10 +2,10 @@
 
 > [!WARNING]
 > **Playtest 内测阶段免责声明**  
-> 当前处于 Playtest 内测阶段，后续 mod 接口可能存在变更。本文档基于官方源码库 `Practice` 主线（远端分支 `origin/codex/playtest-v060-20261122`）与本机 Steam 客户端及 Playtest `v0.0.57`–`v0.0.62` 更新记录核实沉淀。  
-> **实测验证基准**：现役 `Practice` 主线 `v0.0.60`（Commit `cc3d43a5`，`2026-11-22`）/ Steam Playtest `v0.0.57`–`v0.0.62`（本地端 `v0.0.60`，Commit `cc3d43a`）  
+> 当前处于 Playtest 内测阶段，后续 mod 接口可能存在变更。本文档基于官方源码库 `Practice` 主线（远端分支 `origin/codex/v065-unified-20261125`）与本机 Steam 客户端及 Playtest `v0.0.57`–`v0.0.65` 更新记录核实沉淀。  
+> **实测验证基准**：现役 `Practice` 主线 `v0.0.65`（Commit `468999d4`，`2026-11-25`）/ 向下兼容 `v0.0.57`–`v0.0.62`  
 > **底盘引擎**：`Godot Engine v4.8.beta1.mono.official` (64-bit) + `.NET 10 CoreCLR`  
-> **验证日期**：`2026-11-24`
+> **验证日期**：`2026-11-25`
 
 ---
 
@@ -312,7 +312,7 @@ const SOURCE_TO_WORLD := 64.0 / 150.0 # 0.4266666667
   - `font_size`: `float`，有限数且在 `[1.0, 4096.0]` 范围内
   - `source`: `Dictionary`（障碍物携带 `{"kind": "wall"|"air"|"door"|"window"|"glass", "enabled": bool, "open"?: bool}`）
 
-### 4.3 现役 `Practice` 全量 21 个非测试 `comp_*.gd` 组件速查表
+### 4.3 现役 `Practice` 非测试内置 `comp_*.gd` 组件速查表（共 23 个，含 `v0.0.65` 新增 2 项）
 
 所有未安装或当前未启用的可选组件记录可在序列化时携带 `"parked": true`，并可附带可选布尔键 `"manual"`（`<FUS_REPO_DIR>/scenes/entities/board_token.gd:301-368` 规定宿主仅当 `"parked" == true` 时允许携带 `"manual": bool`，用于区分手工停放与自动停放）；宿主 `EntityStateCodec` 校验时将不透明保留其状态，并在目标模块启用时自动恢复。在 `shared/sdk/fu_sdk/` 中可通过 `attach_component(entity_id, script_path, state, parked, manual)` / `attach_parked_component(...)` 写入停放组件，各原生插件的业务 API 已拆分为独立的 `shared/sdk/fu_sdk/plugins/<module_id>.gd` 脚本，并受 `ModuleRegistry` 未启用警告与 `"preserve"`/`"skip"` 策略管控。
 
@@ -346,6 +346,8 @@ const SOURCE_TO_WORLD := 64.0 / 150.0 # 0.4266666667
 | 19 | `scenes/candidates/resource_pool/comp_resource_pool.gd` | `schema_version`, `values: Dictionary` | 通用资源池与数值属性 |
 | 20 | `scenes/candidates/module_example/comp_example_badge.gd` | `schema_version`, `enabled`, `label` | 内置模块开发示例徽章 |
 | 21 | `scenes/candidates/scene_box/comp_scene_box.gd` | 旧候选脚本 | 已被 `modules/scene_box/comp_scene_box.gd` 取代 |
+| 22 | `modules/monster_compendium/comp_monster_statblock.gd` | `statblock: Dictionary` | **`v0.0.65` 新增**：怪物面板组件（仅限 `is_unit()` 且与 `dnd_character_sheet` 互斥，支持 `statblock_locked` 联机脱敏） |
+| 23 | `modules/stat_bubbles/comp_stat_bubble.gd` | `schema_version`, `hp_cur`, `hp_max`, `shield`, `ac`, `show_shield`, `show_ac`, `auto_bridge`, `anchor_pos`, `locked` | **`v0.0.65` 新增**：棋子属性气泡（仅限 `is_unit()`，支持自动桥接角色卡/怪物面板与伤势脱敏） |
 
 ---
 
@@ -353,19 +355,19 @@ const SOURCE_TO_WORLD := 64.0 / 150.0 # 0.4266666667
 
 ### 5.1 传输通道与原生同步分工
 
-现役 `Practice` Wire 协议标识为 `fus-practice/38-retained-reconnect-20261107`（来源 `docs/core/network-sync.md`、`docs/core/network-transports.md`）：
+现役 `Practice` Wire 协议标识为 `fus-practice/39-complete-table-entry-r1`（来源 `scenes/board/networking/network_session.gd:17`）：
 - **三通道优先级（Steam 优先级 `2 -> 0 -> 1`）**：
   - 通道 `0`：`MultiplayerSynchronizer` / `MultiplayerSpawner` 原生状态同步（棋子 `native_actor_transport.gd` + 根姿态 `NativePoseSync` + 图层显隐位图 `native_layer_visibility.gd`）；
   - 通道 `1`：图片素材与超大字段 16 KiB 分块载荷（`native_field_transfer.gd`，单字段上限 `32 MiB`，收发缓冲各 `64 MiB`）；
   - 通道 `2`：离散指令、房间控制与模块动作 RPC。
 - **客户端不预测写位置**：玩家仅发送移动目标，权威主机核验权限与碰撞后以 `ALWAYS` 流同步根姿态，静止 3 个物理周期后以 `ON_CHANGE` 小快照可靠收尾。
 
-### 5.2 四大核心模块网络契约
+### 5.2 四大核心模块网络契约（含 `fus.plugin.v2` 外部开放与 `local_only` 隔离）
 
-1. **房间握手契约（`scenes/board/networking/network_module_contract.gd`）**：`VERSION = 1`，清单 `{version, campaign_uid, generation, modules: [{id, version}], world_generation?, module_generations?}`（上限 128 模块），**仅传可信模块 ID 与协议版本号，绝不携带可执行路径或主持私有状态**。标记 `isolated_lifecycle: true` 的内置模块支持 `module_patch_flow.gd` 局部热启停。
-2. **动作提交（`module_action_exchange.gd`，Slot `&"network.actions"`）**：仅主机权威执行，每玩家队列限 8、总限 64、超时 5000ms；可替换瞬时目标（如匀速拖拽 `goal`）通过 `notify_module_action` 与 `network_notification_key` 去重节流。
-3. **状态投影（`module_projections.gd`，Slot `&"network.projections"`）**：两阶段原子提交（`stage -> publish -> world_current`）与失败逆序回滚；仅安装侧可信声明 `replica_presentation_only: true`（迷雾/拖拽/网格/先攻/骰子）可走只读呈现快速路径，**禁止网络载荷自报资格**。
-4. **即时表现层（`module_presentation_exchange.gd`，Slot `&"network.presentations"`）**：独立分块通道（单包 `<= 3 MiB`、总队列 `<= 16 MiB`、`<= 32` 任务、每帧 4 块 / 2ms 预算），每块发送前重查授权，严禁写世界状态或存档。
+1. **房间握手契约（`scenes/board/networking/network_module_contract.gd`）**：`VERSION = 1`，清单 `{version, campaign_uid, generation, modules: [{id, version}], world_generation?, module_generations?}`（上限 128 模块），**仅传可信模块 ID 与协议版本号，绝不携带可执行路径或主持私有状态**。标记 `local_only: true` 的模块（包括全部 `fus.desktop-module.v1`）会被 `campaign_supported` 与 `network_module_manifest()` 自动跳过，且不得注册任何 `network.*` 槽位；标记 `isolated_lifecycle: true` 的模块支持 `module_patch_flow.gd` 局部热启停。
+2. **动作提交（`module_action_exchange.gd`，Slot `&"network.actions"`）**：仅主机权威执行，每玩家队列限 `8`、总限 `64`、超时 `5000ms`；外部 `fus.plugin.v2` 提供方需满足 `ModuleProjections.valid(spec, runtime)`（`spec.id == MODULE_ID` 且 `spec.source == MODULE_ID`，通过 `set_meta(&"module_id", MODULE_ID)` 校验），并实现 `network_action_valid(payload) -> bool`、`network_action_revoked(peer, payload) -> String`、`network_request(peer, payload) -> Dictionary`（或 `network_request_async`）。
+3. **状态投影（`module_projections.gd`，Slot `&"network.projections"`）**：两阶段原子提交（`stage -> publish -> world_current`）与失败逆序回滚；`fus.plugin.v2` 提供方必须声明 `signal projection_changed(peer: int)` 与全部 8 个方法（`network_projection`、`network_cursor`、`network_revoked`、`validate_replica_projection`、`capture_replica_projection`、`stage_replica_projection`、`publish_replica_projection`、`restore_replica_projection`），且 `spec.id == MODULE_ID`、`replica_presentation_only: true`（在 `stage`/`publish`/`restore` 中通过 `_sync.call(&"owns_module_projection_write", self)` 校验写所有权）。
+4. **即时表现层（`module_presentation_exchange.gd`，Slot `&"network.presentations"`）**：独立分块通道（单包 `<= 3 MiB`、总队列 `<= 16 MiB`、`<= 32` 任务、每帧 4 块 / 2ms 预算），提供 `presentation_current` 与 `receive_presentation`，严禁写世界状态或存档。
 
 ### 5.3 合作式视野与权限隔离边界
 
@@ -377,7 +379,45 @@ const SOURCE_TO_WORLD := 64.0 / 150.0 # 0.4266666667
 
 ---
 
-## 6. 附录：旧原型线 `FUS-F2` (`v0.1.80`) 架构差异备忘
+## 6. `v0.0.65` 局内扩展运行时契约（`fus.desktop-module.v1` & `fus.plugin.v2`）
+
+自 `v0.0.65` 起，局内插件通过 `ExtensionBase`（主场景挂载于 `res://mods/<id>/` 或 `res://external_modules/<id>/`）与 `shared/sdk/fu_runtime/v2.gd` 接入以下桌面服务、组件系统与界面槽位：
+
+### 6.1 `DesktopApiService`（`context.consume_service("desktop_api")`）
+
+暴露 26 个只读查询与轻交互接口（`fu_runtime` 由 `desktop_api_helper.gd` 封装）：
+- **身份与权限**：`get_desktop()`、`is_gm()`、`network_role()`、`local_peer_id()`、`local_player_id()`、`joined_players()`、`can_command_entity(entity_or_id, peer)`；
+- **场景与坐标**：`active_scene_uid()`、`active_scene_name()`、`active_floor_uid()`、`active_floor_id()`、`world_units_per_cell()`（回退 `64.0`）、`screen_to_world(pos)`、`world_to_screen(pos)`、`camera_position()`、`camera_zoom()`、`focus_camera(pos)`、`focus_entity(entity_id)`、`current_mode()`、`set_mode(mode_id)`；
+- **实体、生命与存档读取**：`find_entity(entity_id)`、`get_entities(active_floor_only)`、`selected_entities()`、`request_roll(expression, label)`；
+  - `read_entity_vitals(entity_or_id)`：桥接 `dnd_entity_stats_bridge` 与 `stat_bubble`，未授权非 GM 调用方将收到 `{"ok": true, "masked": true, ...}` 脱敏摘要；
+  - `read_saved_module_entry(module_id)`：**仅 GM 可读**（非 GM 调用直接返回 `{}`），返回克隆后的 `world.modules.entries[module_id]`。
+
+### 6.2 `world.overlays` 与 `ExtensionContext.mount_node`
+
+- **`world.overlays`**（`WorldOverlayHost`）：`band` 支持 `"below_entities"`、`"above_entities"`、`"above_fog"`，按 **`priority` 升序** 绘制；`spec` 接受 `scene`（`PackedScene`）、`factory`（`Callable`）或未挂载 `node`（`CanvasItem`）。宿主管线挂载时调用 `bind_provider(provider) -> true`，卸载或模块注销时调用 `deactivate()`。
+- **`ExtensionContext.mount_node(parent, child, index = -1)`**：允许将临时 HUD（如 `CanvasLayer`）挂到桌面或其子节点下；`child` 必须尚未拥有父节点，且注册表回滚时会自动调用 `child.deactivate()`（若有）、移出树并 `queue_free()`。
+
+### 6.3 `CompBase` 自定义组件、`public_state` 披露与 `EntityComponentPage` 撤销栈
+
+- **组件注册（`ComponentCatalog` 15 键）**：组件脚本命名须遵循 `comp_<plugin_id>__<name>.gd`（`id_from_path` 提取 `<plugin_id>__<name>`，禁止占核心名 `"visual"`/`"permission"`），`register_component(spec)` 包含 15 个字段：`id`、`path`、`scene`、`version`、`label`、`description`、`network_scope`（`"private" | "shared" | "peer"`）、`initial_ready_peer_local`、`projection_ignores_entity_flags`、`entity_local_membership`、`entity_local_content`（须 `network_scope == "peer"`）、`recipient_component_rows`（须 `entity_local_content == true`）、`library_visible`、`prepare_world`、`accepts_world_delta`。
+- **`public_state(state, peer)` 联机披露守卫**：`world_disclosure.gd` 同步组件前会鸭子类型调用 `comp.public_state(state, peer)` 并经 `accepts_state(public)` 验证。对于含敏感开关（如 `dm_secret: true`）的组件，非 GM（`peer > 1`）且不具备 `CompPermission.can_command(peer)` 时应脱敏返回 `{}`。
+- **互斥与压制**：`CompBase` 支持 `component_tags()`、`dominance_priority()`、`suppresses_components()`、`suppression_allowlist()`、`exclusive_group()`、`conflicts_with_components()`；核心 `"visual"` 与 `"permission"` 永远免疫压制。
+- **`EntityComponentPage` 与 `EditModeController`**：属性页继承 `EntityComponentPage`，实现 `bind_entities(entities: Array[BoardToken])` 与 `refresh()`，在编辑时发出 `editing_started` 与 `edit_requested(&"field" | &"numeric", payload)` 接入全局撤销重做；通过 `.call()` 调用 `EditModeController.components_request(...)` 或 `configure_components(...)` 时必须传递强类型 `Array[BoardToken]` / `Array[Dictionary]` 变量。
+
+### 6.4 桌面扩展 UI 槽位（`SlotRegistry`）
+
+| 槽位 ID | 排序 | 关键契约与防坑约束 |
+| :--- | :--- | :--- |
+| `ui.desktop_panels` | `priority` 降序 | 场景根节点须为 `Control`，实现 `bind_provider(provider) -> true`、`deactivate()`（可选 `activate()`），支持 `dm_only` 与可选 `tab_scene` |
+| `ui.module_settings` | `priority` 降序 | 场景根节点须为 `Control`，实现 `bind_provider(provider) -> true`、`refresh()`、`deactivate()` |
+| `ui.mode_bar` | `priority` 降序 | 禁止占用 `"select"`/`"edit"`/`"build"`，ID 必须含 `.`，**`on_enter(desk)` 必须显式返回 `bool` `true`**（返回 `null` 或 `false` 将被判定拒绝进入） |
+| `ui.entity_actions` | `priority` 降序 | ID 必须含 `.`，`label` 1..80 字符，`surfaces` 子集 `["action_bar", "context_wheel"]`，`wheel_ring`/`wheel_slot` `0..31`，`shortcut_key` `KEY_SPACE..KEY_Z`，上限 `256` 项 |
+| `ui.canvas_actions` | 按注册顺序（无 `priority` 排序） | 仅支持 8 个字段（`id` 含 `.`、`label` 1..80 字符、`execute: Callable`、`predicate: Callable`、`tooltip`、`priority`、`wheel_ring` 限 `1 \| 2`、`wheel_slot` 限 `0..7`；不支持 `surfaces`/`dm_only`/`danger`/`present_during_drag`/`shortcut_key`/`presentation`/`target_matches`），上限 `128` 项且强制要求 `can_author_world()`（仅 GM） |
+| `ui.entity_properties` | 按注册顺序（无 `priority` 排序） | 挂载自定义实体属性检查面板：场景根节点必须继承 **`EntityComponentPage`** 并实现 `bind_provider(provider) -> true`（宿主通过 `cancel_edit()`/`bind_entities()`/`refresh()` 管理，**不调用 `deactivate()`**），仅在 `quick_access` 且 `can_author_world()` 下生效 |
+
+---
+
+## 7. 附录：旧原型线 `FUS-F2` (`v0.1.80`) 架构差异备忘
 
 > [!NOTE]
 > 官方源码仓库远端 `origin/HEAD` 默认分支 `codex/post-dnd-followups`（Commit `ff4a1600`，`2026-10-06`，`v0.1.80`）为**已被现役 `Practice` 替代的早期纯 GDScript + C++ 原型线**，请勿与现役 Steam `Practice` 混用：

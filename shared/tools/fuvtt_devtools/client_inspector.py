@@ -75,6 +75,30 @@ CONTRACT_WATCH_FILES: tuple[str, ...] = (
     "modules/image_flip/comp_image_flip.gdc",
     "modules/follow/comp_follow.gdc",
     "scenes/candidates/entity_notes/comp_entity_note.gdc",
+    # In-world extension host contracts (present since v0.0.60)
+    "scenes/extension/extension_base.gdc",
+    "scenes/extension/extension_context.gdc",
+    "scenes/extension/hook_ids.gdc",
+    "scenes/extension/hook_bus.gdc",
+    "scenes/extension/component_catalog.gdc",
+    "scenes/extension/module_replica_lifecycle.gdc",
+    "scenes/extension/slot_registry.gdc",
+)
+
+# v0.0.65+ in-world module contracts (tracked separately so v0.0.60 extracted_pck checks remain green)
+V065_CONTRACT_WATCH_FILES: tuple[str, ...] = (
+    "scenes/extension/desktop_api_service.gdc",
+    "scenes/entities/components/comp_base.gdc",
+    "scenes/entities/state_value.gdc",
+    "scenes/desktop/entities/entity_component_page.gdc",
+    "scenes/desktop/modules/world_overlay_host.gdc",
+    "scenes/desktop/modules/module_settings_host.gdc",
+    "scenes/desktop/entities/entity_extension_actions.gdc",
+    "scenes/board/desktop/mode_bar.gdc",
+    "scenes/board/networking/network_module_contract.gdc",
+    "scenes/board/networking/module_action_exchange.gdc",
+    "scenes/board/networking/module_projections.gdc",
+    "scenes/board/networking/world_disclosure.gdc",
 )
 
 # External non-PCK Steam install files monitored alongside FUS.exe
@@ -131,6 +155,34 @@ GIT_PRACTICE_WATCH_FILES: tuple[str, ...] = (
     "modules/image_flip/comp_image_flip.gd",
     "modules/follow/comp_follow.gd",
     "scenes/candidates/entity_notes/comp_entity_note.gd",
+    # v0.0.65 unified in-world module host contracts & tooling
+    "scenes/extension/extension_base.gd",
+    "scenes/extension/extension_context.gd",
+    "scenes/extension/extension_runtime.gd",
+    "scenes/extension/desktop_api_service.gd",
+    "scenes/extension/hook_ids.gd",
+    "scenes/extension/hook_bus.gd",
+    "scenes/extension/slot_registry.gd",
+    "scenes/extension/component_catalog.gd",
+    "scenes/extension/module_configuration.gd",
+    "scenes/extension/module_configuration_transaction.gd",
+    "scenes/extension/module_catalog_plan.gd",
+    "scenes/extension/module_replica_lifecycle.gd",
+    "scenes/extension/entity_module_projection.gd",
+    "scenes/extension/token.gd",
+    "scenes/entities/components/comp_base.gd",
+    "scenes/entities/state_value.gd",
+    "scenes/desktop/entities/entity_component_page.gd",
+    "scenes/desktop/modules/world_overlay_host.gd",
+    "scenes/desktop/modules/module_settings_host.gd",
+    "scenes/desktop/entities/entity_extension_actions.gd",
+    "scenes/board/desktop/mode_bar.gd",
+    "scenes/board/networking/network_module_contract.gd",
+    "scenes/board/networking/module_action_exchange.gd",
+    "scenes/board/networking/module_projections.gd",
+    "scenes/board/networking/world_disclosure.gd",
+    "tools/build_world_plugin.gd",
+    "tests/check_world_module_plugin_v2.gd",
 )
 
 _PROJECT_GODOT_VERSION_RE = re.compile(r'(?m)^config/version="([^"]+)"')
@@ -638,6 +690,22 @@ def _build_snapshot_from_reader(
                 "sha256": _sha256_bytes(file_bytes),
             }
 
+    v065_contract_files: dict[str, dict[str, Any]] = {}
+    for rel_path in V065_CONTRACT_WATCH_FILES:
+        file_bytes = read_file_fn(rel_path)
+        if file_bytes is None:
+            v065_contract_files[rel_path] = {
+                "exists": False,
+                "size_bytes": None,
+                "sha256": None,
+            }
+        else:
+            v065_contract_files[rel_path] = {
+                "exists": True,
+                "size_bytes": len(file_bytes),
+                "sha256": _sha256_bytes(file_bytes),
+            }
+
     pck_header: dict[str, Any] | None = None
     if pck_info is not None:
         pck_header = {
@@ -658,6 +726,7 @@ def _build_snapshot_from_reader(
         "build_identity": build_identity,
         "builtin_plugin": builtin_plugin,
         "contract_files": contract_files,
+        "v065_contract_files": v065_contract_files,
         "external_files": external_files if external_files is not None else {},
         "git_source": git_source,
     }
@@ -731,6 +800,10 @@ def compare_snapshots(
         previous.get("contract_files") or {},
         current.get("contract_files") or {},
     )
+    prev_v065 = previous.get("v065_contract_files") or {}
+    curr_v065 = current.get("v065_contract_files") or {}
+    if prev_v065 and curr_v065:
+        changed_files.extend(_diff_file_maps(prev_v065, curr_v065))
 
     prev_ext = previous.get("external_files") or {}
     curr_ext = current.get("external_files") or {}
@@ -853,6 +926,7 @@ def inspect_client(
             "build_identity": None,
             "builtin_plugin": {"exists": False, "zip_size_bytes": None, "zip_sha256": None, "manifest": None, "entry_gd_sha256": None},
             "contract_files": {},
+            "v065_contract_files": {},
             "external_files": {},
             "git_source": git_source_data,
         }
