@@ -1,26 +1,29 @@
 # SDK Log Console (`mods/sdk-log-console/`)
 
-> **Fu vtt `fus.session-plugin.v1` 控制台诊断与 R3 `LogBus` / R2 `ModuleRegistry` 日志消费插件**
+> **Fu vtt `fus.desktop-module.v1`（`scope: "hybrid"`）双栖开发者控制台示例插件：局外 `.json`/`.log` 会话诊断 + 局内纯本机设置页与悬浮终端窗口**
 
 ---
 
-## 1. 概述与设计定位
+## 1. 概述与双栖设计定位
 
-`sdk-log-console`（插件 ID：`sdk_log_console`）是基于 `shared/sdk/fu_sdk/v1.gd` 构建的独立会话级控制台日志诊断插件。它通过 `ImportSession.get_logger()`（R3 `LogBus`）与 `WorldBuilder.get_module_registry()`（R2 `ModuleRegistry` 及 M1–M3 原生插件 SDK）完成：
+`sdk-log-console`（插件 ID：`sdk_log_console`，局内模块 ID：`mod.sdk_log_console`）同时实现两条互补的激活轨道，互不冲突且各自可独立验收：
 
-1. **实时订阅与缓冲区读取**：在 `prepare_import` 中通过 `logger.subscribe(...)` 实时收集结构化日志，并在退出前确保 `logger.unsubscribe(sub_token)` 防止 `RefCounted` 引用泄露，同时通过 `logger.get_entries(...)` 与 `logger.get_warnings(...)` 读取环形缓冲区结果。
-2. **多格式诊断输入解析**：支持 `.json`（配置与 `entries` 数组、`"mode": "stress_warnings"`、`audit_modules`、`enabled_modules`、`disabled_policy`、`emit_debug`、`emit_in_world`）与纯文本 `.log`（逐行解析 `DEBUG`/`INFO`/`WARN`/`ERROR` 前缀），对空文件（0 字节）或损坏 JSON 均降级优雅处理且绝不触发 `push_error()`。
-3. **原生模块审计与未启用警告**：审计目标原生模块（默认 `simple_fog,campaign_time,checklist,drawing`），由 `ModuleRegistry.check_and_warn(...)` 与对应插件 SDK 的 `get_availability()` 输出结构化警告（包含 `disabled` 与 Playtest `v0.0.61`–`v0.0.62` 禁用的 `playtest_blocked` 模块），并支持 `"preserve"` 与 `"skip"` 策略。
-4. **验证可行的多通道输出**：通过官方宿主已验证的 4 个安全输出通道呈现控制台日志（不编造或尝试挂载未授权的桌面运行时 UI）。
+1. **局外会话导入轨（`entry.gd` + `fu_sdk/v1.gd`）**：
+   - 继承 `RefCounted`，由开桌页 `PluginImport` 在后台工作线程运行 `inspect_import` 与 `prepare_import`。
+   - 订阅 R3 `LogBus`（`ImportSession.get_logger()`）与 R2 `ModuleRegistry`（`WorldBuilder.get_module_registry()`），支持 `.json` 与 `.log` 诊断输入、原生模块审计（`simple_fog,campaign_time,checklist,drawing`）、`preserve` / `skip` 策略，并将摘要写入 `world.modules.entries["sdk_log_console"]`（`version: 1`）。
+2. **局内纯本机桌面控制台轨（`mods/sdk_log_console/` + `fu_runtime/v2.gd`）**：
+   - 在 `plugin.json` 中以 `"schema": "fus.desktop-module.v1"`、`"host_api": 2`、`"scope": "hybrid"` 声明 `"modules": [{"id": "mod.sdk_log_console", "local_only": true, "network_version": 0, ...}]`（纯 `.zip` 分发，不含 `pack_file`）。
+   - 入口 `res://mods/sdk_log_console/module.tscn`（`module.gd` 继承 `ExtensionBase`）在世界内纯本机启动：零网络动作/投影注册、不阻塞房间联机握手；注册 `ui.module_settings` 设置页（`console_settings_page.tscn`）用于开关与配置悬浮终端控制台窗口（`console_floating_window.tscn`）。
+   - 为避免与 `FeatureManager` 对 `world.modules.entries[module_id]` 的状态恢复冲突，局内模块使用独立 ID `mod.sdk_log_console`，在 GM 模式下通过 `DesktopApiHelper.read_saved_module_entry("sdk_log_console")` 只读回显局外导入的诊断历史。
 
 ---
 
-## 2. 清单与配置项（`plugin.json`）
+## 2. 清单与双轨接口（`plugin.json`）
 
-- `schema`: `"fus.session-plugin.v1"`、`host_api`: `1`、`scope`: `"session"`、`id`: `"sdk_log_console"`、`entry`: `"entry.gd"`
-- `import_extensions`: `["json", "log"]`
-- `import_action_label`: `"运行 SDK 日志控制台诊断"`
-- `settings`（严格仅使用 `"bool"` 与 `"string"`，共 8 项）：
+- `schema`: `"fus.desktop-module.v1"`、`host_api`: `2`、`scope`: `"hybrid"`、`id`: `"sdk_log_console"`、`entry`: `"entry.gd"`
+- `import_extensions`: `["json", "log"]`、`import_action_label`: `"运行 SDK 日志控制台诊断"`
+- `modules[0]`：`id: "mod.sdk_log_console"`、`entry_scene: "res://mods/sdk_log_console/module.tscn"`、`version: 1`、`network_version: 0`、`local_only: true`、`isolated_lifecycle: true`
+- `settings`（局外导入配置，严格仅使用 `"bool"` 与 `"string"`，共 8 项）：
 
 | `id` | `type` | `default` | 说明 |
 |---|---|---|---|
@@ -29,53 +32,40 @@
 | `disabled_policy` | `"string"` | `"preserve"` | 未启用模块写入策略：`"preserve"` 或 `"skip"` |
 | `min_level` | `"string"` | `"debug"` | `LogBus` 最低采集级别：`debug` / `info` / `warning` / `error` |
 | `forward_reports` | `"bool"` | `true` | 是否将 `DEBUG`/`INFO` 日志同步转发至 `host.report` |
-| `emit_debug` | `"bool"` | `true` | 是否输出调试级日志 |
+| `emit_debug` | `"bool"` | `true` | 是否输出调试级详细日志 |
 | `emit_in_world` | `"bool"` | `true` | 是否在输出世界中写入 `checklist` 与 `drawing`（`text_ink`）日志看板 |
 | `stress_warnings` | `"bool"` | `false` | 触发 120 条唯一警告以验证 `LogBus` 与宿主 `100 条 / 7000 字符`上限保护 |
 
 ---
 
-## 3. 输入格式与输出通道
+## 3. 局外输入输出与局内终端能力
 
-### 支持的输入文件
+### 局外导入（`entry.gd`）
 
-- **`.json` 诊断描述文件**（示例见 `examples/sample_diagnostic.json`）：可包含 `enabled_modules`、`audit_modules`、`disabled_policy`、`emit_debug`、`emit_in_world`、`mode: "stress_warnings"` 与 `entries` 数组。
-- **`.log` 纯文本日志文件**：按行解析 `DEBUG` / `INFO` / `WARN` / `WARNING` / `ERROR` 前缀并回放至 `LogBus`；回放 `ERROR` 行时临时关闭 `emit_to_engine`（`logger.set_emit_to_engine(false)`）以防止触发 `push_error()` 导致无头宿主验收失败。
-- **空文件 / 损坏 JSON**：在 `inspect_import` 与 `prepare_import` 中均安全降级并记录警告，不崩溃、不产生 Godot `ERROR:` 日志。
+- **`.json` 诊断描述文件**（示例见 `examples/sample_diagnostic.json`）与 **`.log` 纯文本日志文件**（逐行解析 `DEBUG` / `INFO` / `WARN` / `WARNING` / `ERROR`），对空文件与损坏 JSON 安全降级且不触发 `push_error()`。
+- 通过 `host.report(...)`、`host.warn(...)`（受 `100` 条 / `7000` 字符上限保护）、Godot 控制台流与可选世界内 `checklist` + `drawing` 看板输出，并将结构化摘要持久化至 `world.modules.entries["sdk_log_console"]`。
 
-### 宿主已验证输出通道
+### 局内设置页与悬浮终端窗口（`mods/sdk_log_console/`）
 
-1. **`host.report(...)`**：实时更新 `SessionScreen` 导入进度状态文本。
-2. **`host.warn(...)` -> `metadata.notes` & `result.warnings`**：输出去重后的结构化警告，严格受限于宿主 `100` 条与 `7000` 字符上限保护。
-3. **Godot 引擎控制台流（`print` / `push_warning`）**：由 `LogBus` 统一格式化 `[FuSdk/<LEVEL>][<source>] <message>` 输出，在开发/无头日志及客户端 `DiagnosticLogger`（`F2` 诊断导出）中可见。
-4. **世界内日志看板（可选，`emit_in_world == true`）**：
-   - 写入 `sdk_log_console` 模块摘要状态（`world.modules.entries["sdk_log_console"]`）。
-   - 通过 `builder.checklist()` 写入日志任务条目（`source = ""`，单行标题 `<= 96` 字符）。
-   - 通过 `builder.drawing()` 写入 `text_ink` 世界文本面板（`font = "sans"`，`font_size = 18`，有效 32 位十六进制 `floor_uid`）。
-   - 当 `checklist` 或 `drawing` 未启用时，会自然触发 R2 警告（`"preserve"` 保留状态；`"skip"` 立即跳过不污染世界）。
+- **设置页（`ui.module_settings` -> `console_settings_page.tscn`）**：提供开启/关闭悬浮终端控制台窗口、切换最低采集级别（`DEBUG`/`INFO`/`WARNING`/`ERROR`）、HookBus 捕获开关、引擎日志采集开关、GM 导入历史回显开关、清空缓冲与实时诊断摘要。
+- **悬浮终端窗口（`console_floating_window.tscn`）**：
+  - 优先经 `screen_host.mount_floating_panel(panel)` 挂载到桌面 `FloatingLayer/Panels`（自动阻断穿透点击并在 `LineEdit` 聚焦时让出快捷键），在无头测试环境回退 `SlotHelper.mount_node(screen_host, panel)`，并在 `_on_unregister()` 中同步移除并释放节点（`ObjectDB` 零泄漏）。
+  - 支持标题栏拖拽、关闭按钮、级别下拉筛选、关键字实时过滤、`RichTextLabel` 彩色日志渲染与本地诊断命令：`help`、`status`、`clear`、`level <debug|info|warning|error>`、`hooks`、`engine`、`imported`、`entities`。
+  - **可选宿主数据源**：通过 `HookHelper` 订阅常用世界 `HookIds` 与自定义 `mod.sdk_log_console.diagnostic`；通过 `context.consume_service("debug_hooks")` 读取内置计数器快照；通过安全探测 `/root/DevTools._engine_logger.capture()` 增量采集引擎日志（`LogBus` 配置 `emit_to_engine: false` 以避免自身日志形成反馈环）。
 
 ---
 
-## 4. `<FUS_REPO_DIR>` 源码级宿主限制实证（为什么无法在桌面上挂载运行时 UI 控制台）
+## 4. `<FUS_REPO_DIR>` 源码级宿主契约实证（`v0.0.60` 限制与 `v0.0.65` 双栖演进）
 
-经对官方只读基准仓库 `<FUS_REPO_DIR>`（分支 `codex/playtest-v060-20261122`，提交 `cc3d43a527b39522986004ecc0d891b20f17a2fc`，`project.godot` 版本 `config/version="0.0.60"`）逐文件只读核实，外部 `fus.session-plugin.v1` 插件**不支持**在桌面世界（`DesktopScreen`）中挂载任何运行时 `Control`、`Window`、`PopupPanel` 或 `ui.desktop_panels` 面板：
+经对官方只读基准仓库 `<FUS_REPO_DIR>`（现役 `Practice` 主线 `codex/v065-unified-20261125` / Steam Playtest `v0.0.65`，对照历史基准 `v0.0.60`）逐文件只读核实：
 
-1. **Manifest 契约无 UI / 面板 / 自动加载字段**：
-   - `<FUS_REPO_DIR>/services/plugins/PluginPackageJob.cs:98-116`（`ValidateManifest`）强制要求 `schema == "fus.session-plugin.v1"`、`host_api == 1`、`scope == "session"`，仅校验 `id`、`version`、`name`、`description`、`entry`（单 `.gd` 入口）、`settings`（`<= 32` 项且仅限 `"bool"` / `"string"`）与 `import_extensions`（`<= 8` 项），无任何桌面面板、场景或 autoload 扩展字段；第 `247` 与 `267` 行内联限制压缩包条目数为 `2..1000`。
-2. **插件服务仅驻留于局外 `SessionScreen`，不进入 `DesktopScreen`**：
-   - `<FUS_REPO_DIR>/services/plugins/session_plugins.gd:80` 明确注释：`## App 持有局外插件；开桌页只借用，不把安装服务带进世界或等待其网络检查。`
-   - `<FUS_REPO_DIR>/scenes/app/app.gd:79,118,260,403-495` 仅将 `$SessionPlugins` 绑定到开桌页 `_session.bind_plugins($SessionPlugins)`，在 `_enter_desktop`（403–495 行）实例化桌面场景时完全不传入外部插件服务。
-   - `<FUS_REPO_DIR>/scenes/session/session_screen.gd:42-46,72-76,475-477` 仅将插件用于 `SessionSettings`、`PluginActions` 与 `$PluginImport`。
-3. **入口执行强制 `RefCounted` 且运行于 `WorkerThreadPool`**：
-   - `<FUS_REPO_DIR>/scenes/session/plugins/plugin_import.gd:118-149`（`_start_inspection` / `_confirm_import`）明确检查 `if not instance is RefCounted or not instance.has_method("prepare_import"):`，若返回 `Node` 实例会直接 `instance.free()` 并拒绝；`inspect_import` 与 `prepare_import` 均通过 `WorkerThreadPool.add_task(...)` 在后台工作线程运行，无法操作场景树 UI。
-   - `<FUS_REPO_DIR>/scenes/session/plugins/session_plugin_actions.gd:17,26` 与 `<FUS_REPO_DIR>/scenes/session/plugins/session_plugin_drop.gd:40-48` 规定：仅当 `import_extensions` 非空时才生成开桌页导入按钮与文件拖放入口，否则插件在 UI 中完全不可触发。
-4. **`DesktopScreen` 桌面扩展与面板槽位仅限受信任内置模块**：
-   - `<FUS_REPO_DIR>/scenes/desktop/desktop_screen.gd:102` 仅从内置 `FeatureCatalog.trusted_entries()` 启动 `$Extensions/FeatureManager`。
-   - `<FUS_REPO_DIR>/scenes/extension/feature_manager.gd:245-246,314` 明确声明目录只能由已信任内置代码提供，存档 ID 与外部消息从不加载外部实现，未安装模块仅保留原记录而不执行实现。
-   - `<FUS_REPO_DIR>/scenes/desktop/layout/desktop_panel_host.gd:94-106,159-166` 规定 `&"ui.desktop_panels"` 槽位必须同时满足：`spec.scene` 为可实例化为 `Control`（实现 `bind_provider` / `deactivate`）的 `PackedScene`、`provider is ExtensionBase`、`_runtime.is_ancestor_of(provider)` 且具备活跃 `ExtensionContext`——外部会话插件既非 `ExtensionBase` 也无场景挂载点。
-5. **内置调试工具受发布构建门禁且不存在运行时 Mod 包加载器**：
-   - `<FUS_REPO_DIR>/services/debug_tools.gd:120,138-143` 将 `F3` 调试工具严格门禁在 `OS.is_debug_build()`，正式 Steam Playtest 发布版不可用；`<FUS_REPO_DIR>/services/diagnostic_logger.gd` 仅将引擎日志采集入环形缓冲用于 `F2` 反馈导出。
-   - `<FUS_REPO_DIR>/docs/research/session-plugins-20261025/README.md:29-35` 明确确认 `fus.session-plugin.v1` 为局外文件导入协议，不注册进 `FeatureManager` 或桌面组件库。
-   - 对 `<FUS_REPO_DIR>` 执行 `git -C <FUS_REPO_DIR> grep` 检索 `load_resource_pack` 与 `ISteamUGC`，确认官方源码中不存在任何面向外部 Mod 的运行时 PCK/UGC 加载器。
+1. **为什么 `entry.gd` 轨道仍严格受限于 `RefCounted`（不得直接挂载桌面 UI）**：
+   - `<FUS_REPO_DIR>/services/plugins/PluginPackageJob.cs`（`ValidateManifest` 与 `EnsureMountPack`）对旧版 `fus.session-plugin.v1` 仅允许单 `.gd` 入口、`settings`（`<= 32` 项且仅限 `"bool"` / `"string"`）与 `import_extensions`；在双栖 `fus.desktop-module.v1` 下，仅通过 `IsModNamespacePath` 过滤 `mods/<id>/` 与 `external_modules/<id>/` 子树并用 `ProjectSettings.load_resource_pack(...)` 挂载为桌面资源包，同时将包根 `entry.gd` 保留给开桌页导入器。
+   - `<FUS_REPO_DIR>/services/plugins/session_plugins.gd` 与 `<FUS_REPO_DIR>/scenes/app/app.gd` 仍将 `$SessionPlugins` 绑定到开桌页 `_session.bind_plugins($SessionPlugins)`，由 `<FUS_REPO_DIR>/scenes/session/session_screen.gd`、`session_plugin_actions.gd` 与 `session_plugin_drop.gd` 提供文件导入入口与配置。
+   - `<FUS_REPO_DIR>/scenes/session/plugins/plugin_import.gd` 强制检查导入入口为 `RefCounted` 并通过 `WorkerThreadPool.add_task(...)` 在后台线程执行 `inspect_import` / `prepare_import`，因此 `entry.gd` 本身绝不能操作场景树或挂载任何桌面节点。
+2. **为什么 `fus.desktop-module.v1`（`scope: "hybrid"`）允许纯本机在世界内挂载设置页与悬浮终端**：
+   - `<FUS_REPO_DIR>/scenes/desktop/desktop_screen.gd` 与 `<FUS_REPO_DIR>/scenes/extension/feature_manager.gd` 在 `v0.0.65` 已支持加载外部纯 ZIP 桌面模块（`local_only: true`、`network_version: 0`），且 `NetworkModuleContract` 与 `FeatureManager` 会将 `local_only` 模块排除出联机版本清单与房间握手检查。
+   - `<FUS_REPO_DIR>/scenes/desktop/layout/desktop_panel_host.gd` 对应的 `ui.desktop_panels` 槽位仅承载侧栏标签页，而 `ui.module_settings`（`ModuleSettingsHost`）与 `WorldInputArea.mount_floating_panel(...)` 专门允许 `ExtensionBase` 提供方注册设置页（`Control` 根、实现 `bind_provider` / `refresh` / `deactivate`）并在桌面悬浮层安全挂载独立可拖动面板。
+   - `<FUS_REPO_DIR>/services/debug_tools.gd` 仍将 `F3` 调试界面门禁在 `OS.is_debug_build()`，但无论调试或发布构建都会通过 `<FUS_REPO_DIR>/services/diagnostic_logger.gd` 挂载 `_engine_logger`；同时检索 `load_resource_pack` 与 `ISteamUGC` 可确认，外部包挂载统一经 `PluginPackageJob.cs` 与 `session_plugins.gd` 的 ZIP 挂载管线完成（仍不存在未经清单声明的任意 UGC 动态脚本加载器）。
 
-因此，本插件采用宿主架构完全支持且可独立验收的替代方案：**`RefCounted` 会话插件订阅 R3 `LogBus` + R2 `ModuleRegistry` 审计 + `host.report` / `host.warn`（`metadata.notes`）/ 引擎日志流 / 可选世界内 `checklist` + `drawing` 看板**。
+因此，`sdk-log-console` 以**`entry.gd`（局外 `RefCounted` 导入器）+ `mod.sdk_log_console`（局内 `local_only` `ExtensionBase` 设置页与悬浮终端）**的双轨结构，成为官方契约完整支持、可通过 `fuvtt_cli.py validate / build / verify-host` 独立验收的标准混合插件范例。

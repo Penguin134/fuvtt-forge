@@ -28,9 +28,14 @@ if str(TOOLS_DIR) not in sys.path:
 
 from fuvtt_devtools.deployer import safe_extract_zip  # noqa: E402
 from fuvtt_devtools.env_config import WorkspaceConfig, load_config  # noqa: E402
-from fuvtt_devtools.host_verifier import PROBE_PROJECT_GODOT, analyze_godot_logs  # noqa: E402
+from fuvtt_devtools.host_verifier import (  # noqa: E402
+    PROBE_PROJECT_GODOT,
+    _INWORLD_HOST_SHIMS,
+    _render_global_script_class_cache,
+    analyze_godot_logs,
+)
 from fuvtt_devtools.packager import BuildArtifact, build_mod  # noqa: E402
-from fuvtt_devtools.validator import validate_mod_dir, validate_zip_archive  # noqa: E402
+from fuvtt_devtools.validator import INWORLD_SCHEMAS, validate_mod_dir, validate_zip_archive  # noqa: E402
 
 
 _CASE_START_RE = re.compile(r"^=== E2E_CASE_START (\S+) ===\s*$")
@@ -586,6 +591,24 @@ class GodotBatchProbe:
         if self.session.pkg_dir.exists():
             _rmtree_force(self.session.pkg_dir)
         safe_extract_zip(artifact.zip_path, self.session.pkg_dir)
+
+        shims_dir = self.session.probe_project / "_host_shims"
+        godot_dir = self.session.probe_project / ".godot"
+        if artifact.schema in INWORLD_SCHEMAS:
+            shims_dir.mkdir(parents=True, exist_ok=True)
+            godot_dir.mkdir(parents=True, exist_ok=True)
+            for fname, (_, code) in _INWORLD_HOST_SHIMS.items():
+                write_utf8_no_bom_lf(shims_dir / fname, code)
+            write_utf8_no_bom_lf(
+                godot_dir / "global_script_class_cache.cfg",
+                _render_global_script_class_cache(),
+            )
+        else:
+            if shims_dir.exists():
+                _rmtree_force(shims_dir)
+            cache_cfg = godot_dir / "global_script_class_cache.cfg"
+            if cache_cfg.exists():
+                cache_cfg.unlink()
 
         project_godot = PROBE_PROJECT_GODOT.replace(
             'config/name="FuVTT_VerifyHostProbe"', 'config/name="FuVTT_E2ESdkProbe"'

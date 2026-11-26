@@ -13,7 +13,7 @@
 
 ## 1. 快速上手：3 分钟跑通构建与导入
 
-克隆本仓库后，`mods/` 目录默认随仓包含四份可参考实现：`mods/_template/` 与 `mods/sdk-log-console/`（`fus.session-plugin.v1`）、`mods/_template-desktop-module/`（`fus.desktop-module.v1`）以及 `mods/_template-world-plugin/`（`fus.plugin.v2`）。其余具体插件子目录均已通过 `.gitignore` 忽略，便于你独立维护。
+克隆本仓库后，`mods/` 目录默认随仓包含四份可参考实现：`mods/_template/`（`fus.session-plugin.v1`）、`mods/_template-desktop-module/`（`fus.desktop-module.v1`）、`mods/_template-world-plugin/`（`fus.plugin.v2`）以及 `mods/sdk-log-console/`（`fus.desktop-module.v1`，`scope: "hybrid"` 局外 + 局内双激活示例）。其余具体插件子目录均已通过 `.gitignore` 忽略，便于你独立维护。
 
 ### 前置准备
 
@@ -102,7 +102,7 @@ fuvtt-forge/
 │   ├── _template/                   # 随仓模板：fus.session-plugin.v1 局外导入脚手架
 │   ├── _template-desktop-module/    # 随仓模板：fus.desktop-module.v1 纯本机桌面模块脚手架
 │   ├── _template-world-plugin/      # 随仓模板：fus.plugin.v2 联机世界模块脚手架
-│   ├── sdk-log-console/             # 随仓示例：LogBus 日志与 ModuleRegistry 诊断插件 (v1)
+│   ├── sdk-log-console/             # 随仓示例：fus.desktop-module.v1 (scope: hybrid) 双激活控制台诊断插件
 │   └── <your-mod>/                  # 你的独立业务插件目录
 ├── shared/                          # 跨插件共享基础设施
 │   ├── sdk/
@@ -139,7 +139,7 @@ fuvtt-forge/
 
 ## 5. 开发者文档与 SDK Wiki 导览
 
-完整的零基础入门教程、`plugin.json` 三协议清单规范、`fu_sdk`（`v1.3.0`）与 `fu_runtime`（`v2.0.0`）全部 API 手册已同步发布至 [fuvtt-forge Wiki](https://github.com/Penguin134/fuvtt-forge/wiki)（其余局外导入与局内实时扩展手册均可通过 Wiki 首页与侧栏导航直达）：
+完整的零基础入门教程、`plugin.json` 三协议清单规范、`fu_sdk`（`v1.3.0`）与 `fu_runtime`（`v2.0.0`）全部 API 手册以及分插件图鉴已同步发布至 [fuvtt-forge Wiki](https://github.com/Penguin134/fuvtt-forge/wiki)（其余实战教程与 API 手册均可通过 Wiki 首页与侧栏折叠目录直达）：
 
-1. **[首页：能力边界与全局 API 索引](https://github.com/Penguin134/fuvtt-forge/wiki)**（`Home.md`）— 对比三类插件协议的能力边界与选型路线，查阅世界空间层级、数据类型对照及全局 API 索引。
-2. **[快速上手：从零构建并导入完整 Demo](https://github.com/Penguin134/fuvtt-forge/wiki/Quickstart-and-Demo)**（`Quickstart-and-Demo.md`）— 完整走通局外导入 Demo 闭环；如需查看局内模块入门与模板解析，可从 Wiki 首页或侧栏进入对应指南页。
+1. **[Wiki 首页（Home）](https://github.com/Penguin134/fuvtt-forge/wiki)** — 浏览三秒可读的目录导航树，按核心概念、实战教程、运行时 API、分插件图鉴与 CLI 工具链快速定位。
+2. **[上手导读与架构总览（Getting-Started）](https://github.com/Penguin134/fuvtt-forge/wiki/Getting-Started)** — 对比三类协议选型路线、双模对象协作链路、GDScript 类型对照及最小生命周期骨架。

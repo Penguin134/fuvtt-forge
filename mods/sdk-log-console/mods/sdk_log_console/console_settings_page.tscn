@@ -1,0 +1,152 @@
+[gd_scene format=3]
+
+[ext_resource type="Script" path="res://mods/sdk_log_console/console_settings_page.gd" id="1_page"]
+
+[node name="SdkLogConsoleSettingsPage" type="VBoxContainer"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/separation = 12
+script = ExtResource("1_page")
+
+[node name="Hint" type="Label" parent="."]
+layout_mode = 2
+theme_type_variation = &"MutedLabel"
+text = "纯本机开发者诊断模块（local_only / network_version=0）：在世界内查看实时 LogBus、HookBus、引擎日志与局外导入历史，不产生任何联机同步或世界存档写入。"
+autowrap_mode = 3
+
+[node name="WindowPanel" type="PanelContainer" parent="."]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_type_variation = &"ModuleSettingsGroupPanel"
+
+[node name="VBox" type="VBoxContainer" parent="WindowPanel"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="WindowTitle" type="Label" parent="WindowPanel/VBox"]
+layout_mode = 2
+text = "悬浮终端控制台窗口"
+
+[node name="WindowSep" type="HSeparator" parent="WindowPanel/VBox"]
+layout_mode = 2
+
+[node name="ConsoleVisibleCheck" type="CheckButton" parent="WindowPanel/VBox"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(0, 28)
+layout_mode = 2
+focus_mode = 0
+mouse_default_cursor_shape = 2
+text = "开启悬浮终端控制台窗口（Overlay）"
+
+[node name="WindowActionRow" type="HBoxContainer" parent="WindowPanel/VBox"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="ToggleConsoleButton" type="Button" parent="WindowPanel/VBox/WindowActionRow"]
+unique_name_in_owner = true
+layout_mode = 2
+focus_mode = 0
+mouse_default_cursor_shape = 2
+text = "切换控制台窗口"
+
+[node name="WindowNote" type="Label" parent="WindowPanel/VBox"]
+layout_mode = 2
+theme_type_variation = &"MutedLabel"
+text = "开启后可在桌面顶层拖动窗口、按级别筛选、搜索关键字或执行本地诊断命令（help / status / clear / level / hooks / engine / imported / entities）。"
+autowrap_mode = 3
+
+[node name="CapturePanel" type="PanelContainer" parent="."]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_type_variation = &"ModuleSettingsGroupPanel"
+
+[node name="VBox" type="VBoxContainer" parent="CapturePanel"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="CaptureTitle" type="Label" parent="CapturePanel/VBox"]
+layout_mode = 2
+text = "日志采集与过滤策略"
+
+[node name="CaptureSep" type="HSeparator" parent="CapturePanel/VBox"]
+layout_mode = 2
+
+[node name="MinLevelRow" type="HBoxContainer" parent="CapturePanel/VBox"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="MinLevelLabel" type="Label" parent="CapturePanel/VBox/MinLevelRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+text = "最低采集日志级别"
+
+[node name="MinLevelOption" type="OptionButton" parent="CapturePanel/VBox/MinLevelRow"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(140, 0)
+layout_mode = 2
+focus_mode = 0
+
+[node name="CaptureHooksCheck" type="CheckButton" parent="CapturePanel/VBox"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(0, 28)
+layout_mode = 2
+focus_mode = 0
+mouse_default_cursor_shape = 2
+text = "订阅 HookBus 世界事件（entity / mode / dice / vitals / combat 等）"
+
+[node name="CaptureEngineCheck" type="CheckButton" parent="CapturePanel/VBox"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(0, 28)
+layout_mode = 2
+focus_mode = 0
+mouse_default_cursor_shape = 2
+text = "采集客户端引擎诊断日志（/root/DevTools._engine_logger）"
+
+[node name="CaptureImportedCheck" type="CheckButton" parent="CapturePanel/VBox"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(0, 28)
+layout_mode = 2
+focus_mode = 0
+mouse_default_cursor_shape = 2
+text = "GM 模式读取局外导入诊断记录（world.modules.entries[\"sdk_log_console\"]）"
+
+[node name="StatusPanel" type="PanelContainer" parent="."]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_type_variation = &"ModuleSettingsGroupPanel"
+
+[node name="VBox" type="VBoxContainer" parent="StatusPanel"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="StatusTitle" type="Label" parent="StatusPanel/VBox"]
+layout_mode = 2
+text = "当前诊断摘要与操作"
+
+[node name="StatusSep" type="HSeparator" parent="StatusPanel/VBox"]
+layout_mode = 2
+
+[node name="ButtonRow" type="HBoxContainer" parent="StatusPanel/VBox"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="ClearLogsButton" type="Button" parent="StatusPanel/VBox/ButtonRow"]
+unique_name_in_owner = true
+layout_mode = 2
+focus_mode = 0
+mouse_default_cursor_shape = 2
+text = "清空日志缓冲"
+
+[node name="RefreshStatusButton" type="Button" parent="StatusPanel/VBox/ButtonRow"]
+unique_name_in_owner = true
+layout_mode = 2
+focus_mode = 0
+mouse_default_cursor_shape = 2
+text = "刷新状态"
+
+[node name="StatusSummaryLabel" type="Label" parent="StatusPanel/VBox"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_type_variation = &"MutedLabel"
+text = "等待绑定模块运行态..."
+autowrap_mode = 3

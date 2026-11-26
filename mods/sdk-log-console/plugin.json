@@ -1,11 +1,11 @@
 {
-  "schema": "fus.session-plugin.v1",
-  "host_api": 1,
-  "scope": "session",
+  "schema": "fus.desktop-module.v1",
+  "host_api": 2,
+  "scope": "hybrid",
   "id": "sdk_log_console",
   "version": "0.1.0",
   "name": "SDK Log Console",
-  "description": "基于 Fu vtt R3 LogBus 与 R2 ModuleRegistry 的控制台日志诊断插件（支持 .json/.log 审计、订阅收集与宿主安全通道输出）。",
+  "description": "基于 Fu vtt R3 LogBus、R2 ModuleRegistry 与 fu_runtime v2 的双栖控制台诊断插件：局外保留 .json/.log 审计与安全通道输出，局内以纯本机模块提供设置页与可开关悬浮终端控制台窗口。",
   "entry": "entry.gd",
   "import_extensions": ["json", "log"],
   "import_action_label": "运行 SDK 日志控制台诊断",
@@ -61,6 +61,21 @@
       "type": "bool",
       "label": "触发 120 条警告以验证宿主 100/7000 上限保护",
       "default": false
+    }
+  ],
+  "modules": [
+    {
+      "id": "mod.sdk_log_console",
+      "display_name": "SDK 日志控制台",
+      "entry_scene": "res://mods/sdk_log_console/module.tscn",
+      "version": 1,
+      "network_version": 0,
+      "local_only": true,
+      "isolated_lifecycle": true,
+      "requires": [],
+      "conflicts": [],
+      "description": "纯本机开发者诊断控制台模块：在世界内收集 LogBus、HookBus、DesktopApiHelper、可选 debug_hooks/引擎日志与导入历史，并通过设置页开关悬浮终端窗口。",
+      "disable_effect": "立即撤回设置页并销毁本机悬浮控制台窗口，零世界存档写入、零联机同步。"
     }
   ]
 }

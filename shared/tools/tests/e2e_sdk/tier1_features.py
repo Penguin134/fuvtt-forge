@@ -1445,12 +1445,20 @@ class Tier1FeatureTests(unittest.TestCase):
         raw = manifest_path.read_bytes()
         self.assertFalse(raw.startswith(b"\xef\xbb\xbf"))
         manifest = json.loads(raw.decode("utf-8"))
-        self.assertEqual(manifest.get("schema"), "fus.session-plugin.v1")
-        self.assertEqual(manifest.get("host_api"), 1)
-        self.assertEqual(manifest.get("scope"), "session")
+        self.assertEqual(manifest.get("schema"), "fus.desktop-module.v1")
+        self.assertEqual(manifest.get("host_api"), 2)
+        self.assertEqual(manifest.get("scope"), "hybrid")
+        self.assertNotIn("pack_file", manifest)
+        self.assertNotIn("pck", manifest)
         self.assertEqual(manifest.get("id"), "sdk_log_console")
         self.assertEqual(manifest.get("entry"), "entry.gd")
-        self.assertTrue(manifest.get("import_extensions"))
+        self.assertEqual(manifest.get("import_extensions"), ["json", "log"])
+        modules = manifest.get("modules", [])
+        self.assertEqual(len(modules), 1)
+        self.assertEqual(modules[0].get("id"), "mod.sdk_log_console")
+        self.assertEqual(modules[0].get("entry_scene"), "res://mods/sdk_log_console/module.tscn")
+        self.assertIs(modules[0].get("local_only"), True)
+        self.assertEqual(modules[0].get("network_version"), 0)
 
     def test_t1_f28_02_console_mod_gitignore_and_git_tracking(self) -> None:
         gitignore_txt = (WORKSPACE_ROOT / ".gitignore").read_text(encoding="utf-8")
@@ -1467,6 +1475,9 @@ class Tier1FeatureTests(unittest.TestCase):
             txt = gd.read_text(encoding="utf-8")
             self.assertNotRegex(txt, re.compile(r"\b(?:Window|PopupPanel|Control)\.new\s*\("))
             self.assertNotIn("ui.desktop_panels", txt)
+            self.assertNotIn("network.actions", txt)
+            self.assertNotIn("network.projections", txt)
+            self.assertNotIn("network.presentations", txt)
 
     def test_t1_f28_04_console_mod_cli_validate_and_build(self) -> None:
         assert self.session.build_dir is not None and self.session.cache_dir is not None

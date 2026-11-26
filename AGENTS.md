@@ -9,7 +9,7 @@
 - `mods/_template/`：标准局外导入插件脚手架模板（`fus.session-plugin.v1`）。
 - `mods/_template-desktop-module/`：标准纯本机桌面表现模块模板（`fus.desktop-module.v1`）。
 - `mods/_template-world-plugin/`：标准联机世界模块模板（`fus.plugin.v2`）。
-- `mods/sdk-log-console/`：局外控制台日志与模块治理示例插件（`fus.session-plugin.v1`）。
+- `mods/sdk-log-console/`：局外 + 局内双激活示例插件（`fus.desktop-module.v1`，`scope: "hybrid"`）。
 - `mods/<mod-name>/`：独立插件包目录（包含专属 `AGENTS.md`、`src/`、`assets/` 与清单文件）。
 - `shared/docs/`：共享底层技术知识库（纯按需懒加载，禁止默认预加载）。
 - `shared/sdk/`：跨插件复用的已验证公共库，含局外 `fu_sdk/`（35 脚本，`v1.3.0`）与局内 `fu_runtime/`（`v2.0.0`）。
@@ -43,4 +43,4 @@
 - **多智能体模型分工默认偏好**：在支持指定模型的子智能体/Swarm 协作场景下（除非用户当次另有指定），默认将简单/常规任务交由 `Hydrogen (Extra)`，编码实现交由 `Neon (High)`，项目管理与验收审查交由 `Carbon (High)`。
 - **文件编码与命名**：全部文本源码、配置与文档统一使用 UTF-8 无 BOM 编码；插件目录命名统一采用 `kebab-case`（如 `dnd5e-sheet-helper`）。
 - **提交信息前缀**：采用约定式提交前缀：`feat(<mod>):`、`fix(<mod>):`、`docs(shared):`、`chore(tools):`、`refactor(<scope>):`。
-- **文档同步要求**：每当从 Playtest 客户端或官方源码核实新接口、字段或兼容问题并更新 `shared/docs/` 时，须同步记录对应客户端版本号、Commit 哈希与验证日期；同步维护配套 Wiki 仓库时，须先读取其 `.meta/terminology.md` 对齐标准术语与礼貌客观文风。
+- **文档同步要求**：每当从 Playtest 客户端或官方源码核实新接口、字段或兼容问题并更新 `shared/docs/` 时，须同步记录对应客户端版本号、Commit 哈希与验证日期；同步维护配套 Wiki 仓库时，须激活 `human-docs-and-wiki` 技能（依据其 `references/fuvtt-forge-profile.md`、`references/page-archetypes.md` 与 `scripts/lint_wiki.py`）对齐标准术语、页面原型与礼貌客观文风。

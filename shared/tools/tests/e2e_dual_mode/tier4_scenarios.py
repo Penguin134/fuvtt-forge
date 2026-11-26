@@ -264,21 +264,68 @@ class Tier4ScenarioTests(unittest.TestCase):
         for schema in ("fus.session-plugin.v1", "fus.desktop-module.v1", "fus.plugin.v2"):
             self.assertIn(schema, repo_text)
 
-        wiki_files = list(wiki_dir.glob("*.md"))
+        root_readme_text = (WORKSPACE_ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertNotIn("Quickstart-and-Demo", root_readme_text, "README.md must not link to deleted Quickstart-and-Demo")
+        self.assertIn("/wiki/Getting-Started", root_readme_text, "README.md must link to stable /wiki/Getting-Started")
+        agents_text = (WORKSPACE_ROOT / "AGENTS.md").read_text(encoding="utf-8")
+        self.assertNotIn(".meta/terminology.md", agents_text, "AGENTS.md must not reference deleted .meta/terminology.md")
+
+        self.assertFalse((wiki_dir / ".meta").exists(), "Wiki must not contain .meta/ directory")
+        nested_mds = [
+            str(p.relative_to(wiki_dir))
+            for p in wiki_dir.rglob("*.md")
+            if ".git" not in p.parts and len(p.relative_to(wiki_dir).parts) > 1
+        ]
+        self.assertEqual(nested_mds, [], f"Wiki .md files must be flat at root: {nested_mds}")
+
+        wiki_files = sorted(wiki_dir.glob("*.md"))
         stems = {p.stem for p in wiki_files}
         self.assertIn("Home", stems)
         self.assertIn("_Sidebar", stems)
+        self.assertIn("Guide-Hybrid-Dual-Activation", stems)
         wiki_text = "\n".join(p.read_text(encoding="utf-8") for p in wiki_files)
-        for schema in ("fus.session-plugin.v1", "fus.desktop-module.v1", "fus.plugin.v2"):
-            self.assertIn(schema, wiki_text, f"Wiki missing schema {schema}")
-        link_re = re.compile(r"\[\[([^\]]+)\]\]")
+        for token in ("fus.session-plugin.v1", "fus.desktop-module.v1", "fus.plugin.v2", "sdk_log_console", "mod.sdk_log_console"):
+            self.assertIn(token, wiki_text, f"Wiki missing token {token}")
+        mediawiki_re = re.compile(r"\[\[([^\]]+)\]\]")
+        md_link_re = re.compile(r"(?<!!)\[([^\]]+)\]\(([^)]+)\)")
+        hardcoded_wiki_re = re.compile(r"https?://github\.com/[^/\s)]+/[^/\s)]+/wiki(?:/[^\s)]*)?", re.IGNORECASE)
         for md in wiki_files:
-            txt = md.read_text(encoding="utf-8")
-            for m in link_re.finditer(txt):
-                target = m.group(1).split("|")[-1].split("#")[0].strip()
-                if target:
-                    norm = target.replace(" ", "-")
-                    self.assertTrue(target in stems or norm in stems, f"Broken Wiki link [[{m.group(1)}]] in {md.name}")
+            in_fence = False
+            for line_no, raw_line in enumerate(md.read_text(encoding="utf-8").splitlines(), start=1):
+                if raw_line.lstrip(" ").startswith(("```", "~~~")):
+                    in_fence = not in_fence
+                    continue
+                if in_fence:
+                    continue
+                self.assertIsNone(
+                    mediawiki_re.search(raw_line),
+                    f"MediaWiki [[...]] link found in {md.name}:L{line_no}",
+                )
+                self.assertIsNone(
+                    hardcoded_wiki_re.search(raw_line),
+                    f"Hardcoded GitHub Wiki URL found in {md.name}:L{line_no}",
+                )
+                for _label, raw_target in md_link_re.findall(raw_line):
+                    target = raw_target.strip().split()[0]
+                    if target.startswith(("http://", "https://", "mailto:", "#")):
+                        continue
+                    slug_part = target.split("#", 1)[0]
+                    if not slug_part:
+                        continue
+                    self.assertFalse(
+                        slug_part.endswith(".md"),
+                        f"Intra-Wiki link '{target}' must not include .md in {md.name}:L{line_no}",
+                    )
+                    self.assertNotIn(
+                        "/",
+                        slug_part,
+                        f"Intra-Wiki link '{target}' must not contain '/' in {md.name}:L{line_no}",
+                    )
+                    self.assertIn(
+                        slug_part,
+                        stems,
+                        f"Broken Wiki link '{target}' in {md.name}:L{line_no}",
+                    )
 
     def test_t4_w4_02_path_leak_scan_and_fu_sdk_35_invariance(self) -> None:
         assert_fu_sdk_35_invariance(self, WORKSPACE_ROOT / "shared" / "sdk" / "fu_sdk")

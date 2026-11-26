@@ -1362,23 +1362,35 @@ class HostVerifierTests(BaseDevtoolsTestCase):
             mods_dir=WORKSPACE_ROOT / "mods",
             sdk_dir=WORKSPACE_ROOT / "shared" / "sdk" / "fu_sdk",
             build_dir=(self.case_dir / "iso_console_build").resolve(),
-            cache_dir=(self.case_dir / "iso_console_cache").resolve(),
+            cache_dir=real_cfg.cache_dir,
             fuvtt_install_dir=real_cfg.fuvtt_install_dir,
             fus_repo_dir=real_cfg.fus_repo_dir,
             fus_source_ref=real_cfg.fus_source_ref,
             godot_bin=real_cfg.godot_bin,
         )
-        res = verify_mod_with_host("sdk-log-console", config=iso_cfg)
+        res = verify_mod_with_host(
+            "sdk-log-console",
+            config=iso_cfg,
+            fus_repo="auto" if (real_cfg.fus_repo_dir and real_cfg.fus_repo_dir.is_dir()) else None,
+        )
         self.assertTrue(
             res.ok,
             msg=f"Real Godot verify-host failed on sdk-log-console: failures={res.failures}, log_errors={res.log_errors}",
         )
+        self.assertEqual(res.schema, "fus.desktop-module.v1")
         self.assertEqual(res.plugin_id, "sdk_log_console")
-        self.assertGreaterEqual(len(res.loaded_scripts), 36)
-        self.assertEqual(res.sdk_probe.get("plugin_sdks_resolved"), 23)
-        self.assertTrue(res.sdk_probe.get("log_bus_ok"))
-        self.assertTrue(res.sdk_probe.get("module_registry_ok"))
-        self.assertGreater(res.serialized_bytes, 0)
+        self.assertEqual(res.log_errors, [])
+        self.assertGreaterEqual(res.entity_count, 1)
+        self.assertEqual(res.sdk_probe.get("sdk_version"), "2.0.0")
+        self.assertEqual(
+            res.sdk_probe.get("runtime_v2_path"),
+            "res://mods/sdk_log_console/lib/fu_runtime/v2.gd",
+        )
+        self.assertIn("res://pkg/entry.gd", res.loaded_scripts)
+        self.assertIn("res://mods/sdk_log_console/module.gd", res.loaded_scripts)
+        self.assertIn("res://mods/sdk_log_console/lib/fu_runtime/v2.gd", res.loaded_scripts)
+        if real_cfg.fus_repo_dir and real_cfg.fus_repo_dir.is_dir():
+            self.assertTrue(res.host_contract_probe.get("ok"), msg=res.host_contract_probe)
 
     def test_real_godot_verify_host_exercises_upgraded_fu_sdk_v1_1_features(self) -> None:
         real_cfg = load_config(WORKSPACE_ROOT)

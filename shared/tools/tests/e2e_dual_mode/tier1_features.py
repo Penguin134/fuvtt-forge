@@ -1107,21 +1107,63 @@ class Tier1FeatureTests(unittest.TestCase):
             if os.environ.get("FUVTT_E2E_REQUIRE_GODOT") == "1" or os.environ.get("FUVTT_E2E_REQUIRE_WIKI") == "1":
                 self.fail(f"Required Wiki directory not present: {self.session.cfg.redact_path(wiki_dir)}")
             raise unittest.SkipTest("Wiki dir not present")
-        md_files = list(wiki_dir.glob("*.md"))
+        self.assertFalse((wiki_dir / ".meta").exists(), "Wiki must not contain .meta/ directory")
+        nested_mds = [
+            str(p.relative_to(wiki_dir))
+            for p in wiki_dir.rglob("*.md")
+            if ".git" not in p.parts and len(p.relative_to(wiki_dir).parts) > 1
+        ]
+        self.assertEqual(nested_mds, [], f"Wiki .md files must be flat at root: {nested_mds}")
+        md_files = sorted(wiki_dir.glob("*.md"))
         stems = {p.stem for p in md_files}
         self.assertIn("Home", stems)
         self.assertIn("_Sidebar", stems)
+        self.assertIn("Guide-Hybrid-Dual-Activation", stems)
         combined = "\n".join(p.read_text(encoding="utf-8") for p in md_files)
         self.assertIn("fus.desktop-module.v1", combined, "Wiki must document fus.desktop-module.v1")
         self.assertIn("fus.plugin.v2", combined, "Wiki must document fus.plugin.v2")
-        link_re = re.compile(r"\[\[([^\]]+)\]\]")
+        self.assertIn("sdk_log_console", combined, "Wiki must document sdk_log_console")
+        self.assertIn("mod.sdk_log_console", combined, "Wiki must document mod.sdk_log_console")
+        mediawiki_re = re.compile(r"\[\[([^\]]+)\]\]")
+        md_link_re = re.compile(r"(?<!!)\[([^\]]+)\]\(([^)]+)\)")
+        hardcoded_wiki_re = re.compile(r"https?://github\.com/[^/\s)]+/[^/\s)]+/wiki(?:/[^\s)]*)?", re.IGNORECASE)
         for md in md_files:
-            txt = md.read_text(encoding="utf-8")
-            for m in link_re.finditer(txt):
-                target = m.group(1).split("|")[-1].split("#")[0].strip()
-                if target:
-                    norm = target.replace(" ", "-")
-                    self.assertTrue(target in stems or norm in stems, f"Broken Wiki link [[{m.group(1)}]] in {md.name}")
+            in_fence = False
+            for line_no, raw_line in enumerate(md.read_text(encoding="utf-8").splitlines(), start=1):
+                if raw_line.lstrip(" ").startswith(("```", "~~~")):
+                    in_fence = not in_fence
+                    continue
+                if in_fence:
+                    continue
+                self.assertIsNone(
+                    mediawiki_re.search(raw_line),
+                    f"MediaWiki [[...]] link found in {md.name}:L{line_no}",
+                )
+                self.assertIsNone(
+                    hardcoded_wiki_re.search(raw_line),
+                    f"Hardcoded GitHub Wiki URL found in {md.name}:L{line_no}",
+                )
+                for _label, raw_target in md_link_re.findall(raw_line):
+                    target = raw_target.strip().split()[0]
+                    if target.startswith(("http://", "https://", "mailto:", "#")):
+                        continue
+                    slug_part = target.split("#", 1)[0]
+                    if not slug_part:
+                        continue
+                    self.assertFalse(
+                        slug_part.endswith(".md"),
+                        f"Intra-Wiki link '{target}' must not include .md in {md.name}:L{line_no}",
+                    )
+                    self.assertNotIn(
+                        "/",
+                        slug_part,
+                        f"Intra-Wiki link '{target}' must not contain '/' in {md.name}:L{line_no}",
+                    )
+                    self.assertIn(
+                        slug_part,
+                        stems,
+                        f"Broken Wiki link '{target}' in {md.name}:L{line_no}",
+                    )
 
     def test_t1_f17_04_documented_cli_flags_match_help(self) -> None:
         help_res = self.cli.run_real(["init", "--help"])
