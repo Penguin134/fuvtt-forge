@@ -14,7 +14,7 @@ description: >-
 
 ## 1. 安全红线
 
-- **绝对只读**：仅允许执行 `git -C <FUS_REPO_DIR> status --short`、`log`、`show`、`grep` 或只读文件读取；**严禁**对 `<FUS_REPO_DIR>` 执行任何写操作、`git checkout`、`reset` 或创建临时文件。
+- **绝对只读**：仅允许执行 `git -C <FUS_REPO_DIR> log`、`show`、`grep`、`ls-tree` 或只读文件读取；**严禁**对 `<FUS_REPO_DIR>` 执行任何写操作、`git checkout`、`reset` 或创建临时文件（`<FUS_REPO_DIR>` 工作树状态由开发者在 UI 侧直接追踪，禁止在测试循环中额外执行 `git -C <FUS_REPO_DIR> status` 巡检）。
 - **路径脱敏**：写入本仓库任何代码、测试或 `.md` 文档时，一律使用 `<FUS_REPO_DIR>`、`<FUVTT_INSTALL_DIR>`、`<GODOT_BIN>` 占位符，严禁硬编码本机绝对路径。
 
 ## 2. 标准四步核查流
@@ -25,14 +25,14 @@ description: >-
    ```powershell
    python shared/tools/fuvtt_cli.py inspect-client --source git
    ```
-3. 如装有本地客户端，可追加执行 `python shared/tools/fuvtt_cli.py inspect-client` 对照 PCK 字节码监控清单。
+3. 如装有本地客户端，可追加执行 `python shared/tools/fuvtt_cli.py inspect-client --source steam --extract` 对照最新 PCK 字节码监控清单（客户端更新后须带 `--extract` 刷新 `build/extracted_pck` 缓存）。
 
 ### Step 2：按问题域直达 `<FUS_REPO_DIR>` 真值文件
 
 | 待核实问题 | `<FUS_REPO_DIR>` 必查源码路径 | 重点核对项 |
 | :--- | :--- | :--- |
 | **插件包清单门禁与可配项** | `services/plugins/PluginPackageJob.cs`、`services/plugins/PluginPackageJob.Probe.cs` | `schema`（`fus.session-plugin.v1`）、`settings` 类型/数量上限、`import_extensions`、ZIP 条目限制 |
-| **插件执行线程与运行时 UI 边界** | `scenes/session/plugins/plugin_import.gd`、`scenes/app/app.gd`、`scenes/session/session_screen.gd`、`scenes/desktop/layout/desktop_panel_host.gd` | `RefCounted` 强制要求、`WorkerThreadPool` 后台线程约束、`$SessionPlugins` 生命周期、`DesktopFeatureCatalog.trusted_entries()` 面板白名单 |
+| **插件执行线程与运行时 UI 边界** | `scenes/session/plugins/plugin_import.gd`、`services/plugins/session_plugins.gd`、`scenes/extension/extension_context.gd`、`scenes/extension/feature_manager.gd`、`scenes/desktop/layout/desktop_panel_host.gd` | 局外 `RefCounted`/`WorkerThreadPool` 约束；局内非核心模块 `_on_register` 处于 `_staged` 期（`get_screen_host() == null`，须 `_defer_registered` 延迟挂载）；运行中更新资源包触发 `restart_pending_ids` 需重启客户端生效 |
 | **导入桥接回调、进度与警告上限** | `scenes/session/plugins/import_bridge.gd`、`scenes/session/plugins/import_confirmation.gd` | `host.warn` 条数上限（`100`）、`metadata.notes` 字符上限（`7000`）、`inspect_import` 12 项必填 `counts` 键 |
 | **原生模块总表、启用态与依赖** | `scenes/extension/desktop_feature_catalog.gd`、`scenes/extension/feature_manager.gd` | 正式目录模块 ID、核心 vs 可选分类、`requires` 前置模块依赖（如 `portal -> areas`）、未入目录 `scenes/candidates/**` 模块 |
 | **实体组件前缀、`parked`/`manual` 与互斥** | `scenes/entities/board_token.gd`、`scenes/entities/entity_state_codec.gd` | `components[0..1]`（`visual`/`permission`）前缀不变量、`parked`/`manual` 合法性（`manual` 依赖 `parked == true`）、`SCENE_BOX_CONFLICTS` 互斥表、`unit`-only 或 `map`/障碍物排斥规则 |
@@ -48,14 +48,9 @@ description: >-
 5. **实体宿主类型与组件冲突**：确认组件是否仅允许挂载于 `unit`、是否排斥 `map`/`obstacle`/矢量图形、是否与 `scene_box` / `image_flip` / `area` 双向互斥（含 `parked` 态）。
 6. **扩展标签或枚举白名单**：如宏事件枚举、`^mod:[A-Za-z0-9_.:-]+$` 自定义标签正则、字体名枚举等。
 
-### Step 4：闭环校验与源码零污染确认
+### Step 4：闭环静态校验与无头验收
 1. 运行静态校验与真机无头验收（注意调用 `<GODOT_BIN>` 的命令须在终端工具中设置 `BypassSandbox: true`）：
    ```powershell
    python shared/tools/fuvtt_cli.py validate --all --include-template
    python shared/tools/fuvtt_cli.py verify-host _template
    ```
-2. 确认官方源码仓保持零改动：
-   ```powershell
-   git -C <FUS_REPO_DIR> status --short
-   ```
-   输出必须为空。

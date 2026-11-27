@@ -36,7 +36,7 @@
 - **外部官方源码仓只读与双线防混淆铁律**：仅允许以纯只读方式（如 `git -C <FUS_REPO_DIR> show <ref>:<path>`）核对契约，**严禁对 `<FUS_REPO_DIR>` 执行任何文件写入、删除或 `git checkout`**；生产插件、SDK 与脚手架 100% 锚定现役 `Practice` 主线（`origin/codex/v065-unified-20261125` / Steam 客户端 `v0.0.65`，支持 `fus.session-plugin.v1`、`fus.desktop-module.v1` 与 `fus.plugin.v2` 三协议），严禁将已替代的早期 `FUS-F2` 原型分支（`f2.feature_plugin.v1`）契约混用于生产交付。
 - **凭证与权限边界**：严禁读取、打印或提交任何 Steam 账号信息、发布令牌或私人存档；需要访问工作区外部路径时，必须遵守沙箱边界与用户显式授权。
 - **跨包依赖隔离**：`mods/<mod-a>/` 禁止直接引用 `mods/<mod-b>/src/` 内部实现；经过验证可复用的类型或工具函数，必须提炼至 `shared/sdk/` 后再跨插件复用。
-- **Godot 无头防弹窗硬约束**：调用 `<GODOT_BIN>` 的命令或测试须传入 `--headless --quit`（Windows 子进程设置 `CREATE_NO_WINDOW`），且通过终端工具执行时**必须直接设置 `BypassSandbox: true`**（沙箱拦截工作区外 `GodotSharp` 目录会触发报错并弹出系统 GUI 对话框，禁止先在沙箱内试错）。
+- **Godot 双模防弹窗与沙箱执行约束**：调用 `<GODOT_BIN>` 的子进程须设置 `CREATE_NO_WINDOW`，并在启用终端沙箱时直接设置 `BypassSandbox: true`（避免沙箱拦截工作区外 `GodotSharp` 目录弹出系统报错对话框）。按测试目标分层选型：① **纯数据/导入/构建快检**默认使用 `--headless`（单帧 `--quit` 探针内严禁 `await process_frame`，需多帧时改传 `--quit-after <N>`）；② **桌面 UI 与宿主主题视觉验证**（如 `verify-host --ui-wid`）移除 `--headless`，通过独立消息泵线程创建的不可见屏外 Win32 父窗口传入 `--wid <hidden_hwnd> --single-window --rendering-method gl_compatibility --audio-driver Dummy --quit-after <N>`（见 `shared/tools/fuvtt_devtools/win32_wid_host.py`），在零弹窗、零焦点抢占下完成真实视口渲染与截图取证。
 
 ## 4. 通用代码与提交规范
 
