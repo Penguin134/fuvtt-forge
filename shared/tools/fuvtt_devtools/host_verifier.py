@@ -27,6 +27,7 @@ from .deployer import _load_or_build_artifact, safe_extract_zip
 from .env_config import ConfigError, WorkspaceConfig, load_config
 from .packager import _extract_pack_file
 from .validator import INWORLD_SCHEMAS, extract_module_namespace_roots, resolve_target_mods
+from .win32_wid_host import HiddenWin32WindowHost, Win32WidError, build_wid_godot_args
 
 
 ERROR_LOG_RE = re.compile(
@@ -1503,6 +1504,7 @@ var _retiring: bool = false
 var _extension_deferred_epoch: int = 0
 var _activation_pending: bool = false
 var _activation_error: String = ""
+var _pending_deferred_queue: Array[Dictionary] = []
 
 
 func _ready() -> void:
@@ -1536,6 +1538,7 @@ func deregister_now() -> void:
 	_retiring = true
 	_extension_deferred_epoch += 1
 	_activation_pending = false
+	_pending_deferred_queue.clear()
 	if _registered:
 		_registered = false
 		_on_unregister()
@@ -1543,6 +1546,52 @@ func deregister_now() -> void:
 		ctx.revert_all()
 		ctx = null
 	_retiring = false
+
+
+func _defer_registered(method: StringName, arguments: Array = []) -> void:
+	var ctx_id: int = ctx.get_instance_id() if ctx != null else 0
+	var item := {
+		"epoch": _extension_deferred_epoch,
+		"ctx_id": ctx_id,
+		"method": method,
+		"args": arguments.duplicate(),
+		"done": false,
+	}
+	_pending_deferred_queue.append(item)
+	call_deferred(&"_run_deferred_item", item)
+
+
+func _run_deferred_item(item: Dictionary) -> void:
+	if bool(item.get("done", false)):
+		return
+	item["done"] = true
+	_pending_deferred_queue.erase(item)
+	_run_deferred_registration(
+		int(item.get("epoch", -1)),
+		int(item.get("ctx_id", 0)),
+		item.get("method", &"") as StringName,
+		item.get("args", []) as Array
+	)
+
+
+func flush_deferred_registrations() -> void:
+	var snapshot: Array[Dictionary] = _pending_deferred_queue.duplicate()
+	_pending_deferred_queue.clear()
+	for item: Dictionary in snapshot:
+		if not bool(item.get("done", false)):
+			item["done"] = true
+			_run_deferred_registration(
+				int(item.get("epoch", -1)),
+				int(item.get("ctx_id", 0)),
+				item.get("method", &"") as StringName,
+				item.get("args", []) as Array
+			)
+
+
+func _run_deferred_registration(epoch: int, ctx_id: int, method: StringName, arguments: Array) -> void:
+	if epoch != _extension_deferred_epoch or not _registered or is_queued_for_deletion() or ctx == null or ctx.get_instance_id() != ctx_id or not ctx.can_initialize() or ctx._quiescent:
+		return
+	callv(method, arguments)
 
 
 func _on_register(_context: ExtensionContext) -> void:
@@ -1636,6 +1685,21 @@ func can_initialize() -> bool:
 	return not _closed and is_instance_valid(runtime)
 
 
+func _can_register() -> bool:
+	return not _closed and not _quiescent and can_initialize()
+
+
+func publish() -> bool:
+	if not can_initialize():
+		return false
+	_staged = false
+	return true
+
+
+func quiesce(value: bool) -> void:
+	_quiescent = value
+
+
 func runtime_node() -> Node:
 	return _runtime()
 
@@ -1662,7 +1726,7 @@ func revert_all() -> void:
 
 
 func register_slot_item(slot_id: StringName, spec: Dictionary) -> ExtToken:
-	if not is_active() or not is_instance_valid(slots):
+	if not _can_register() or not is_instance_valid(slots):
 		return ExtToken.make(Callable(), "rejected_slot")
 	var stamped := spec.duplicate(true)
 	stamped["source"] = source_id()
@@ -1678,7 +1742,7 @@ func register_slot_item(slot_id: StringName, spec: Dictionary) -> ExtToken:
 
 
 func subscribe_hook(hook_id: StringName, callback: Callable, priority: int = 0) -> ExtToken:
-	if not is_active() or not is_instance_valid(hooks):
+	if not _can_register() or not is_instance_valid(hooks):
 		return ExtToken.make(Callable(), "rejected_hook")
 	var sid := hooks.subscribe(hook_id, callback, priority)
 	var bus_ref: WeakRef = weakref(hooks)
@@ -1695,7 +1759,7 @@ func emit_hook(hook_id: StringName, arguments: Array = []) -> bool:
 
 
 func subscribe_signal(target: Object, signal_id: StringName, callback: Callable) -> ExtToken:
-	if not is_active() or not is_instance_valid(target) or not target.has_signal(signal_id) or not callback.is_valid():
+	if not _can_register() or not is_instance_valid(target) or not target.has_signal(signal_id) or not callback.is_valid():
 		return ExtToken.make(Callable(), "rejected_signal")
 	if not target.is_connected(signal_id, callback):
 		target.connect(signal_id, callback)
@@ -1710,7 +1774,7 @@ func subscribe_signal(target: Object, signal_id: StringName, callback: Callable)
 
 func publish_service(service_id: String, service: Object) -> ExtToken:
 	var rt := _runtime()
-	if not is_active() or rt == null or service_id.is_empty() or not is_instance_valid(service):
+	if not _can_register() or rt == null or service_id.is_empty() or not is_instance_valid(service):
 		return ExtToken.make(Callable(), "rejected_service")
 	rt.call(&"publish_service_entry", service_id, service)
 	var rt_ref: WeakRef = weakref(rt)
@@ -1729,7 +1793,7 @@ func consume_service(service_id: String) -> Object:
 
 func register_component(spec: Dictionary) -> ExtToken:
 	var rt := _runtime()
-	if not is_active() or rt == null:
+	if not _can_register() or rt == null:
 		return ExtToken.make(Callable(), "rejected_component")
 	var cid: int = int(rt.call(&"register_component_spec", spec, self))
 	var rt_ref: WeakRef = weakref(rt)
@@ -1742,7 +1806,7 @@ func register_component(spec: Dictionary) -> ExtToken:
 
 
 func add_revert(callback: Callable, label: String = "custom") -> ExtToken:
-	if not is_active():
+	if not _can_register():
 		return ExtToken.make(Callable(), label)
 	var tok := ExtToken.make(callback, label)
 	_tokens.append(tok)
@@ -1752,7 +1816,7 @@ func add_revert(callback: Callable, label: String = "custom") -> ExtToken:
 func mount_node(parent: Node, child: Node, index: int = -1) -> ExtToken:
 	var rt := _runtime()
 	var desktop: Node = rt.call(&"get_desktop") as Node if is_instance_valid(rt) else null
-	if not is_active() or not is_instance_valid(desktop) or not is_instance_valid(parent) or not is_instance_valid(child) or child.get_parent() != null or not (parent == desktop or desktop.is_ancestor_of(parent)):
+	if not _can_register() or not is_instance_valid(desktop) or not is_instance_valid(parent) or not is_instance_valid(child) or child.get_parent() != null or not (parent == desktop or desktop.is_ancestor_of(parent)):
 		return ExtToken.make(Callable(), "mount_node_invalid")
 	parent.add_child(child)
 	if index >= 0 and index < parent.get_child_count():
@@ -1986,6 +2050,7 @@ class _MockRuntime:
 	var _components: Array[Dictionary] = []
 	var _next_comp_id: int = 1
 	var _gen: int = 1
+	var _registration_stage: bool = false
 
 	func setup(desktop: Node, screen_host: Control) -> void:
 		_desktop_ref = weakref(desktop)
@@ -2008,7 +2073,8 @@ class _MockRuntime:
 
 	func create_context(ext_owner: Node) -> ExtensionContext:
 		var ctx := ExtensionContext.new()
-		ctx._bind(ext_owner, self, _gen, false)
+		var staged: bool = _registration_stage and not bool(ext_owner.get_meta(&"module_core", false))
+		ctx._bind(ext_owner, self, _gen, staged)
 		return ctx
 
 	func publish_service_entry(service_id: String, service: Object) -> void:
@@ -2255,6 +2321,7 @@ func _initialize() -> void:
 	var pkg_archive := ""
 	var sample_path := ""
 	var report_path := ""
+	var ui_screenshot_path := ""
 	for arg: String in OS.get_cmdline_user_args():
 		if arg.begins_with("--pkg-root="):
 			pkg_root = arg.trim_prefix("--pkg-root=")
@@ -2264,11 +2331,13 @@ func _initialize() -> void:
 			sample_path = arg.trim_prefix("--sample=")
 		elif arg.begins_with("--report="):
 			report_path = arg.trim_prefix("--report=")
+		elif arg.begins_with("--ui-screenshot="):
+			ui_screenshot_path = arg.trim_prefix("--ui-screenshot=")
 
-	call_deferred(&"_run_probe", pkg_root, pkg_archive, sample_path, report_path)
+	call_deferred(&"_run_probe", pkg_root, pkg_archive, sample_path, report_path, ui_screenshot_path)
 
 
-func _run_probe(pkg_root: String, pkg_archive: String, sample_path: String, report_path: String) -> void:
+func _run_probe(pkg_root: String, pkg_archive: String, sample_path: String, report_path: String, ui_screenshot_path: String = "") -> void:
 	var manifest_path := pkg_root.path_join("plugin.json")
 	var manifest: Dictionary = {}
 	if FileAccess.file_exists(manifest_path):
@@ -2392,6 +2461,19 @@ func _run_probe(pkg_root: String, pkg_archive: String, sample_path: String, repo
 
 	var screen_host := Control.new()
 	screen_host.name = "ScreenHost"
+	if not ui_screenshot_path.is_empty():
+		var bg_rect := ColorRect.new()
+		bg_rect.name = "TabletopBackdrop"
+		bg_rect.color = Color(0.15, 0.13, 0.11, 1.0)
+		bg_rect.position = Vector2.ZERO
+		bg_rect.size = Vector2(1440.0, 820.0)
+		desktop.add_child(bg_rect)
+		screen_host.position = Vector2.ZERO
+		screen_host.size = Vector2(1440.0, 820.0)
+		var sh_gd := GDScript.new()
+		sh_gd.source_code = "extends Control\nfunc mount_floating_panel(panel: Control) -> bool:\n\tif panel == null:\n\t\treturn false\n\tif panel.get_parent() != self:\n\t\tadd_child(panel)\n\treturn true\n"
+		sh_gd.reload()
+		screen_host.set_script(sh_gd)
 	desktop.add_child(screen_host)
 
 	var runtime := _MockRuntime.new()
@@ -2439,12 +2521,18 @@ func _run_probe(pkg_root: String, pkg_archive: String, sample_path: String, repo
 				_check(inst is ExtensionBase, "entry_scene root extends ExtensionBase: " + scene_path)
 				if inst is ExtensionBase:
 					inst.set_meta(&"module_id", mid)
-					inst.set_meta(&"module_core", true)
+					inst.set_meta(&"module_core", false)
+					runtime._registration_stage = true
 					features.add_child(inst)
+					runtime._registration_stage = false
 					mod_instances.append(inst)
 					mod_id_by_instance[inst] = mid
 					var eb := inst as ExtensionBase
-					_check(eb.ctx != null and eb.ctx.is_active(), "ExtensionBase registered active ctx for " + mid)
+					_check(eb.ctx != null and not eb.ctx.is_active() and eb.ctx.get_screen_host() == null, "Optional module ctx is staged during _on_register for " + mid)
+					if eb.ctx != null:
+						eb.ctx.publish()
+					eb.flush_deferred_registrations()
+					_check(eb.ctx != null and eb.ctx.is_active(), "ExtensionBase registered active ctx after publish for " + mid)
 					var state_dict: Dictionary = eb.serialize_module_state()
 					_check(StateValue.is_data(state_dict), "serialize_module_state returns pure StateValue data")
 					var raw_bytes := var_to_bytes(state_dict)
@@ -2584,6 +2672,126 @@ func _run_probe(pkg_root: String, pkg_archive: String, sample_path: String, repo
 					page.free()
 			comp_node.free()
 
+	if not ui_screenshot_path.is_empty():
+		_capture_inworld_ui_and_finish(
+			schema,
+			report_path,
+			ui_screenshot_path,
+			desktop,
+			screen_host,
+			runtime,
+			api_service,
+			mod_instances,
+			owned_overlay_nodes,
+		)
+		return
+
+	_teardown_and_finish_inworld(
+		schema,
+		report_path,
+		desktop,
+		runtime,
+		api_service,
+		mod_instances,
+		owned_overlay_nodes,
+		"",
+	)
+
+
+func _capture_inworld_ui_and_finish(
+	schema: String,
+	report_path: String,
+	ui_screenshot_path: String,
+	desktop: Node,
+	screen_host: Control,
+	runtime: Node,
+	api_service: Object,
+	mod_instances: Array[Node],
+	owned_overlay_nodes: Array[Node],
+) -> void:
+	for mod_node: Node in mod_instances:
+		if mod_node.has_method(&"_on_custom_diagnostic"):
+			mod_node.call(&"_on_custom_diagnostic", {"level": "debug", "source": "sdk.probe", "message": "Rendered inside hidden Win32 --wid viewport"})
+			mod_node.call(&"_on_custom_diagnostic", {"level": "warning", "source": "theme.audit", "message": "Checking console readability in --ui-wid mode"})
+			mod_node.call(&"_on_custom_diagnostic", {"level": "error", "source": "sample.alert", "message": "Sample diagnostic error entry"})
+		if mod_node.has_method(&"run_console_command"):
+			mod_node.call(&"run_console_command", "status")
+
+	var preview_pages: Array[Control] = []
+	var preview_frames: Array[Control] = []
+	var slots_obj: Variant = runtime.get("slots")
+	if slots_obj is Object and (slots_obj as Object).has_method(&"get_items"):
+		for slot_item: Dictionary in (slots_obj as Object).call(&"get_items", &"ui.module_settings"):
+			var spec: Dictionary = slot_item.get("spec", {})
+			var pscene := spec.get("scene") as PackedScene
+			var prov: Object = spec.get("provider", null)
+			if pscene == null:
+				continue
+			var pinst := pscene.instantiate()
+			if not (pinst is Control):
+				if pinst != null:
+					pinst.free()
+				continue
+			var pctrl := pinst as Control
+			var frame := PanelContainer.new()
+			frame.position = Vector2(792.0, 48.0)
+			frame.size = Vector2(608.0, 724.0)
+			var margin := MarginContainer.new()
+			margin.add_theme_constant_override("margin_left", 14)
+			margin.add_theme_constant_override("margin_top", 12)
+			margin.add_theme_constant_override("margin_right", 14)
+			margin.add_theme_constant_override("margin_bottom", 12)
+			frame.add_child(margin)
+			margin.add_child(pctrl)
+			screen_host.add_child(frame)
+			if pctrl.has_method(&"bind_provider") and prov != null:
+				pctrl.call(&"bind_provider", prov)
+			preview_pages.append(pctrl)
+			preview_frames.append(frame)
+			break
+
+	for _frame_idx: int in range(4):
+		await process_frame
+	RenderingServer.force_draw(false)
+	var vtex: ViewportTexture = root.get_texture()
+	var img: Image = vtex.get_image() if vtex != null else null
+	_check(img != null and not img.is_empty(), "Captured non-empty Viewport image in --ui-wid mode")
+	var saved_ok := false
+	if img != null and not img.is_empty():
+		saved_ok = img.save_png(ui_screenshot_path) == OK
+	_check(saved_ok, "Saved --ui-wid PNG screenshot: " + ui_screenshot_path.get_file())
+
+	for pg: Control in preview_pages:
+		if is_instance_valid(pg) and pg.has_method(&"deactivate"):
+			pg.call(&"deactivate")
+	for fr: Control in preview_frames:
+		if is_instance_valid(fr):
+			if fr.get_parent() != null:
+				fr.get_parent().remove_child(fr)
+			fr.free()
+
+	_teardown_and_finish_inworld(
+		schema,
+		report_path,
+		desktop,
+		runtime,
+		api_service,
+		mod_instances,
+		owned_overlay_nodes,
+		ui_screenshot_path if saved_ok else "",
+	)
+
+
+func _teardown_and_finish_inworld(
+	schema: String,
+	report_path: String,
+	desktop: Node,
+	runtime: Node,
+	api_service: Object,
+	mod_instances: Array[Node],
+	owned_overlay_nodes: Array[Node],
+	saved_screenshot: String,
+) -> void:
 	# Clean teardown (zero ObjectDB leaks; synchronous for `--headless --quit`)
 	for inst: Node in mod_instances:
 		if is_instance_valid(inst) and inst is ExtensionBase:
@@ -2596,7 +2804,7 @@ func _run_probe(pkg_root: String, pkg_archive: String, sample_path: String, repo
 			if ov_owned.get_parent() != null:
 				ov_owned.get_parent().remove_child(ov_owned)
 			ov_owned.free()
-	runtime.unpublish_service_entry("desktop_api", api_service)
+	runtime.call(&"unpublish_service_entry", "desktop_api", api_service)
 	api_service = null
 	if desktop.get_parent() != null:
 		desktop.get_parent().remove_child(desktop)
@@ -2612,7 +2820,10 @@ func _run_probe(pkg_root: String, pkg_archive: String, sample_path: String, repo
 		"entity_count": mod_instances.size(),
 		"serialized_bytes": 0,
 		"sdk_probe": _sdk_probe,
+		"display_driver": DisplayServer.get_name(),
 	}
+	if not saved_screenshot.is_empty():
+		report_data["ui_screenshot"] = saved_screenshot
 	if not report_path.is_empty():
 		var f := FileAccess.open(report_path, FileAccess.WRITE)
 		if f != null:
@@ -2650,6 +2861,7 @@ func _initialize() -> void:
 	var pck_path := ""
 	var manifest_path := ""
 	var report_path := ""
+	var ui_screenshot_path := ""
 	for arg: String in OS.get_cmdline_user_args():
 		if arg.begins_with("--pkg-archive="):
 			pkg_archive = arg.trim_prefix("--pkg-archive=")
@@ -2659,10 +2871,12 @@ func _initialize() -> void:
 			manifest_path = arg.trim_prefix("--manifest=")
 		elif arg.begins_with("--report="):
 			report_path = arg.trim_prefix("--report=")
-	call_deferred(&"_run_host_probe", pkg_archive, pck_path, manifest_path, report_path)
+		elif arg.begins_with("--ui-screenshot="):
+			ui_screenshot_path = arg.trim_prefix("--ui-screenshot=")
+	call_deferred(&"_run_host_probe", pkg_archive, pck_path, manifest_path, report_path, ui_screenshot_path)
 
 
-func _run_host_probe(pkg_archive: String, pck_path: String, manifest_path: String, report_path: String) -> void:
+func _run_host_probe(pkg_archive: String, pck_path: String, manifest_path: String, report_path: String, ui_screenshot_path: String = "") -> void:
 	var manifest: Dictionary = {}
 	if not manifest_path.is_empty() and FileAccess.file_exists(manifest_path):
 		var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(manifest_path))
@@ -2760,8 +2974,30 @@ func _run_host_probe(pkg_archive: String, pck_path: String, manifest_path: Strin
 			ov.name = overlay_name
 			world.add_child(ov)
 		desktop.add_child(world)
+		if not ui_screenshot_path.is_empty():
+			var bg_rect := ColorRect.new()
+			bg_rect.name = "TabletopBackdrop"
+			bg_rect.color = Color(0.15, 0.13, 0.11, 1.0)
+			bg_rect.position = Vector2.ZERO
+			bg_rect.size = Vector2(2560.0, 1440.0)
+			desktop.add_child(bg_rect)
 		var screen_host := Control.new()
 		screen_host.name = "ScreenHost"
+		var sh_gd := GDScript.new()
+		sh_gd.source_code = "extends Control\nfunc mount_floating_panel(panel: Control) -> bool:\n\tif panel == null:\n\t\treturn false\n\tif panel.get_parent() != self:\n\t\tadd_child(panel)\n\treturn true\n"
+		sh_gd.reload()
+		screen_host.set_script(sh_gd)
+		if not ui_screenshot_path.is_empty():
+			screen_host.position = Vector2.ZERO
+			screen_host.size = Vector2(1440.0, 820.0)
+			var base_theme := load("res://themes/main_menu_theme.tres") as Theme
+			var wood_theme := load("res://themes/menu_packs/wood_game.tres") as Theme
+			if base_theme != null:
+				var comp_theme := base_theme.duplicate(false) as Theme
+				if wood_theme != null:
+					comp_theme.merge_with(wood_theme)
+				screen_host.theme = comp_theme
+				_check(screen_host.theme != null, "FUS host mounted composite wood_game.tres theme onto ScreenHost")
 		desktop.add_child(screen_host)
 
 		var runtime := rt_scene.instantiate()
@@ -2801,54 +3037,197 @@ func _run_host_probe(pkg_archive: String, pck_path: String, manifest_path: Strin
 				_check(inst is ExtensionBase, "Module root is FUS ExtensionBase: " + String(e["id"]))
 				if inst is ExtensionBase:
 					inst.set_meta(&"module_id", String(e["id"]))
-					inst.set_meta(&"module_core", true)
+					inst.set_meta(&"module_core", false)
+					var staged_started: bool = runtime.has_method(&"begin_registration_stage") and bool(runtime.call(&"begin_registration_stage", inst))
 					features_node.add_child(inst)
-					mounted_mods.append(inst)
 					var eb := inst as ExtensionBase
+					if staged_started:
+						_check(eb.ctx != null and not eb.ctx.is_active() and eb.ctx.get_screen_host() == null, "FUS ExtensionRuntime gated get_screen_host() while staged for " + String(e["id"]))
+						_check(bool(runtime.call(&"finish_registration_stage", true)), "FUS ExtensionRuntime published staged module " + String(e["id"]))
+					if eb.has_method(&"_on_deferred_mount"):
+						eb.call(&"_on_deferred_mount")
+					mounted_mods.append(inst)
 					_check(eb.ctx != null and eb.ctx.is_active(), "FUS ExtensionRuntime granted active ExtensionContext to " + String(e["id"]))
-		# Capture unparented world.overlays "node" items before deregister_now() removes SlotRegistry entries
-		var owned_overlay_nodes: Array[Node] = []
-		var slot_reg := runtime.get_node_or_null("SlotRegistry")
-		if slot_reg != null and slot_reg.has_method(&"get_items"):
-			for slot_item: Variant in slot_reg.call(&"get_items", &"world.overlays"):
-				if slot_item is Dictionary:
-					var spec: Variant = (slot_item as Dictionary).get("spec", {})
-					if spec is Dictionary:
-						var ov_raw: Variant = (spec as Dictionary).get("node", null)
-						if ov_raw is Node:
-							var ov_node := ov_raw as Node
-							if is_instance_valid(ov_node) and ov_node.get_parent() == null and not owned_overlay_nodes.has(ov_node):
-								owned_overlay_nodes.append(ov_node)
-		for inst: Node in mounted_mods:
-			if is_instance_valid(inst) and inst is ExtensionBase:
-				(inst as ExtensionBase).deregister_now()
-				if inst.get_parent() != null:
-					inst.get_parent().remove_child(inst)
-				inst.free()
-		for ov_node: Node in owned_overlay_nodes:
-			if is_instance_valid(ov_node):
-				if ov_node.has_method(&"deactivate"):
-					ov_node.call(&"deactivate")
-				if ov_node.get_parent() != null:
-					ov_node.get_parent().remove_child(ov_node)
-				ov_node.free()
-		host_owner.deregister_now()
-		if host_owner.get_parent() != null:
-			host_owner.get_parent().remove_child(host_owner)
-		host_owner.free()
-		api_service = null
-		if CatalogScript != null:
-			var empty_entries: Array[Dictionary] = []
-			CatalogScript.call(&"set_external_entries", empty_entries)
-		if desktop.get_parent() != null:
-			desktop.get_parent().remove_child(desktop)
-		desktop.free()
+		if not ui_screenshot_path.is_empty():
+			_capture_fus_ui_and_finish(
+				report_path,
+				ui_screenshot_path,
+				CatalogScript,
+				desktop,
+				screen_host,
+				runtime,
+				host_owner,
+				api_service,
+				mounted_mods,
+			)
+			return
 
+		_teardown_fus_host(CatalogScript, desktop, runtime, host_owner, mounted_mods)
+		api_service = null
+
+	_write_fus_report_and_quit(report_path, "")
+
+
+func _capture_fus_ui_and_finish(
+	report_path: String,
+	ui_screenshot_path: String,
+	CatalogScript: Script,
+	desktop: Node,
+	screen_host: Control,
+	runtime: Node,
+	host_owner: ExtensionBase,
+	api_service: Object,
+	mounted_mods: Array[Node],
+) -> void:
+	for mod_node: Node in mounted_mods:
+		if mod_node.has_method(&"_on_hook_1"):
+			mod_node.call(&"_on_hook_1", {
+				"actor_name": "主持",
+				"d20_values": [],
+				"dice": [{"burst": false, "loser": false, "set": 0, "subtract": false, "type": "d6", "value": 4}],
+				"expr": "1d6",
+				"is_nat1": false,
+				"is_nat20": false,
+				"label": "",
+				"modifier": 0,
+				"total": 4,
+			}, "dice.rolled")
+		if mod_node.has_method(&"_on_custom_diagnostic"):
+			mod_node.call(&"_on_custom_diagnostic", {"level": "debug", "source": "sdk.probe", "message": "Mounted composite wood_game.tres theme under hidden Win32 --wid host"})
+			mod_node.call(&"_on_custom_diagnostic", {"level": "warning", "source": "theme.audit", "message": "Checking RichTextLabel & Label contrast against dark console surface"})
+			mod_node.call(&"_on_custom_diagnostic", {"level": "error", "source": "sample.alert", "message": "Sample error diagnostic line (zero network side effects)"})
+		if mod_node.has_method(&"run_console_command"):
+			mod_node.call(&"run_console_command", "status")
+
+	var preview_pages: Array[Control] = []
+	var preview_frames: Array[Control] = []
+	var slot_reg_ui := runtime.get_node_or_null("SlotRegistry")
+	if slot_reg_ui != null and slot_reg_ui.has_method(&"get_items"):
+		for raw_item: Variant in slot_reg_ui.call(&"get_items", &"ui.module_settings"):
+			if not (raw_item is Dictionary):
+				continue
+			var spec_v: Variant = (raw_item as Dictionary).get("spec", {})
+			if not (spec_v is Dictionary):
+				continue
+			var spec_d := spec_v as Dictionary
+			var pscene_ui := spec_d.get("scene") as PackedScene
+			var prov_ui: Object = spec_d.get("provider", null)
+			if pscene_ui == null:
+				continue
+			var page_inst := pscene_ui.instantiate()
+			if not (page_inst is Control):
+				if page_inst != null:
+					page_inst.free()
+				continue
+			var page_ctrl := page_inst as Control
+			var frame := PanelContainer.new()
+			frame.name = "ModuleSettingsPreview"
+			frame.theme_type_variation = &"FramePanel"
+			frame.position = Vector2(792.0, 48.0)
+			frame.size = Vector2(608.0, 724.0)
+			var margin := MarginContainer.new()
+			margin.add_theme_constant_override("margin_left", 14)
+			margin.add_theme_constant_override("margin_top", 12)
+			margin.add_theme_constant_override("margin_right", 14)
+			margin.add_theme_constant_override("margin_bottom", 12)
+			frame.add_child(margin)
+			var col := VBoxContainer.new()
+			col.add_theme_constant_override("separation", 10)
+			margin.add_child(col)
+			var hdr := Label.new()
+			hdr.theme_type_variation = &"SectionTitle"
+			hdr.add_theme_font_size_override("font_size", 20)
+			var raw_lbl: Variant = spec_d.get("label", spec_d.get("title", "模块设置"))
+			hdr.text = "模块设置 · " + (String(raw_lbl) if raw_lbl != null else "模块设置")
+			col.add_child(hdr)
+			col.add_child(HSeparator.new())
+			col.add_child(page_ctrl)
+			screen_host.add_child(frame)
+			if page_ctrl.has_method(&"bind_provider") and prov_ui != null:
+				page_ctrl.call(&"bind_provider", prov_ui)
+			preview_pages.append(page_ctrl)
+			preview_frames.append(frame)
+			break
+
+	for _frame_idx: int in range(4):
+		await process_frame
+	RenderingServer.force_draw(false)
+	var vtex: ViewportTexture = root.get_texture()
+	var img: Image = vtex.get_image() if vtex != null else null
+	_check(img != null and not img.is_empty(), "FUS host captured non-empty Viewport image in --ui-wid mode")
+	var saved_ok := false
+	if img != null and not img.is_empty():
+		saved_ok = img.save_png(ui_screenshot_path) == OK
+	_check(saved_ok, "FUS host saved --ui-wid PNG screenshot: " + ui_screenshot_path.get_file())
+
+	for pg: Control in preview_pages:
+		if is_instance_valid(pg) and pg.has_method(&"deactivate"):
+			pg.call(&"deactivate")
+	for fr: Control in preview_frames:
+		if is_instance_valid(fr):
+			if fr.get_parent() != null:
+				fr.get_parent().remove_child(fr)
+			fr.free()
+
+	_teardown_fus_host(CatalogScript, desktop, runtime, host_owner, mounted_mods)
+	api_service = null
+	_write_fus_report_and_quit(report_path, ui_screenshot_path if saved_ok else "")
+
+
+func _teardown_fus_host(
+	CatalogScript: Script,
+	desktop: Node,
+	runtime: Node,
+	host_owner: ExtensionBase,
+	mounted_mods: Array[Node],
+) -> void:
+	# Capture unparented world.overlays "node" items before deregister_now() removes SlotRegistry entries
+	var owned_overlay_nodes: Array[Node] = []
+	var slot_reg := runtime.get_node_or_null("SlotRegistry")
+	if slot_reg != null and slot_reg.has_method(&"get_items"):
+		for slot_item: Variant in slot_reg.call(&"get_items", &"world.overlays"):
+			if slot_item is Dictionary:
+				var spec: Variant = (slot_item as Dictionary).get("spec", {})
+				if spec is Dictionary:
+					var ov_raw: Variant = (spec as Dictionary).get("node", null)
+					if ov_raw is Node:
+						var ov_node := ov_raw as Node
+						if is_instance_valid(ov_node) and ov_node.get_parent() == null and not owned_overlay_nodes.has(ov_node):
+							owned_overlay_nodes.append(ov_node)
+	for inst: Node in mounted_mods:
+		if is_instance_valid(inst) and inst is ExtensionBase:
+			(inst as ExtensionBase).deregister_now()
+			if inst.get_parent() != null:
+				inst.get_parent().remove_child(inst)
+			inst.free()
+	for ov_node: Node in owned_overlay_nodes:
+		if is_instance_valid(ov_node):
+			if ov_node.has_method(&"deactivate"):
+				ov_node.call(&"deactivate")
+			if ov_node.get_parent() != null:
+				ov_node.get_parent().remove_child(ov_node)
+			ov_node.free()
+	host_owner.deregister_now()
+	if host_owner.get_parent() != null:
+		host_owner.get_parent().remove_child(host_owner)
+	host_owner.free()
+	if CatalogScript != null:
+		var empty_entries: Array[Dictionary] = []
+		CatalogScript.call(&"set_external_entries", empty_entries)
+	if desktop.get_parent() != null:
+		desktop.get_parent().remove_child(desktop)
+	desktop.free()
+
+
+func _write_fus_report_and_quit(report_path: String, saved_screenshot: String) -> void:
 	var out := {
 		"ok": _failures.is_empty(),
 		"passed_checks": _passed_checks,
 		"failures": _failures,
+		"display_driver": DisplayServer.get_name(),
 	}
+	if not saved_screenshot.is_empty():
+		out["ui_screenshot"] = saved_screenshot
 	if not report_path.is_empty():
 		var f := FileAccess.open(report_path, FileAccess.WRITE)
 		if f != null:
@@ -2886,6 +3265,8 @@ class HostVerifyResult:
     sdk_probe: dict[str, Any] = field(default_factory=dict)
     schema: str = "fus.session-plugin.v1"
     host_contract_probe: dict[str, Any] = field(default_factory=dict)
+    ui_screenshot_path: Path | None = None
+    ui_wid_telemetry: dict[str, Any] = field(default_factory=dict)
 
 
 def analyze_godot_logs(*log_texts: str) -> list[str]:
@@ -3244,6 +3625,54 @@ def _stage_fus_repo_readonly(
     return stage_dir
 
 
+def _exec_godot_with_optional_wid(
+    *,
+    godot_exe: Path,
+    base_args_after_mode: list[str],
+    user_args: list[str],
+    cwd: Path,
+    env: Mapping[str, str],
+    exec_fn: Callable[..., tuple[int, str, str, bool]],
+    use_real_wid_window: bool,
+    ui_wid: bool,
+    timeout_seconds: int,
+) -> tuple[int, str, str, bool, dict[str, Any]]:
+    """Run Godot either in fast `--headless --quit` mode or inside a hidden Win32 `--wid` host."""
+    if not ui_wid:
+        cmd = [str(godot_exe), "--headless", "--quit", *base_args_after_mode, "--", *user_args]
+        rc, out, err, timed_out = exec_fn(cmd, cwd=cwd, env=env, timeout_seconds=timeout_seconds)
+        return rc, out, err, timed_out, {}
+
+    if not use_real_wid_window:
+        wid_flags = build_wid_godot_args(65536, width=1440, height=820, quit_after=1200)
+        cmd = [str(godot_exe), *wid_flags, *base_args_after_mode, "--", *user_args]
+        rc, out, err, timed_out = exec_fn(cmd, cwd=cwd, env=env, timeout_seconds=timeout_seconds)
+        return rc, out, err, timed_out, {
+            "hwnd": 65536,
+            "width": 1440,
+            "height": 820,
+            "focus_unchanged": True,
+            "parent_visible": False,
+            "mocked": True,
+        }
+
+    with HiddenWin32WindowHost(width=1440, height=820) as wid_host:
+        wid_flags = list(wid_host.build_godot_args(quit_after=1200))
+        cmd = [str(godot_exe), *wid_flags, *base_args_after_mode, "--", *user_args]
+        rc, out, err, timed_out = exec_fn(cmd, cwd=cwd, env=env, timeout_seconds=timeout_seconds)
+        tel = wid_host.snapshot_telemetry()
+        telemetry_dict: dict[str, Any] = {
+            "hwnd": tel.hwnd,
+            "width": tel.width,
+            "height": tel.height,
+            "foreground_before": tel.foreground_before,
+            "foreground_after": tel.foreground_after,
+            "focus_unchanged": tel.focus_unchanged,
+            "parent_visible": tel.parent_visible,
+        }
+    return rc, out, err, timed_out, telemetry_dict
+
+
 def _run_staged_fus_host_probe(
     *,
     fus_repo_dir: Path,
@@ -3254,7 +3683,9 @@ def _run_staged_fus_host_probe(
     child_env: Mapping[str, str],
     exec_fn: Callable[..., tuple[int, str, str, bool]],
     timeout_seconds: int,
-) -> tuple[dict[str, Any], list[str], list[str]]:
+    ui_wid: bool = False,
+    use_real_wid_window: bool = True,
+) -> tuple[dict[str, Any], list[str], list[str], Path | None, dict[str, Any]]:
     """Run host-level verification against a disposable staged copy of `<FUS_REPO_DIR>`."""
     stage_dir = _stage_fus_repo_readonly(
         fus_repo_dir,
@@ -3268,6 +3699,7 @@ def _run_staged_fus_host_probe(
     report_json = evidence_dir / "fus-host-report.json"
     godot_log = evidence_dir / "fus_host.log"
     manifest_copy = evidence_dir / "fus_host_manifest.json"
+    screenshot_file = evidence_dir / "ui_wid_screenshot.png"
     _write_utf8_no_bom(probe_script, FUS_HOST_PROBE_GD)
     _write_utf8_no_bom(
         manifest_copy,
@@ -3278,26 +3710,32 @@ def _run_staged_fus_host_probe(
     if getattr(artifact, "pck_path", None) is not None and Path(artifact.pck_path).is_file():
         pck_arg = Path(artifact.pck_path).resolve().as_posix()
 
-    cmd = [
-        str(godot_exe),
-        "--headless",
-        "--quit",
+    base_args = [
         "--path",
         str(stage_dir),
         "--log-file",
         str(godot_log),
         "--script",
         str(probe_script.resolve()),
-        "--",
+    ]
+    user_args = [
         f"--pkg-archive={artifact.zip_path.resolve().as_posix()}",
         f"--pck-path={pck_arg}",
         f"--manifest={manifest_copy.resolve().as_posix()}",
         f"--report={report_json.resolve().as_posix()}",
     ]
-    exit_code, stdout_text, stderr_text, timed_out = exec_fn(
-        cmd,
+    if ui_wid:
+        user_args.append(f"--ui-screenshot={screenshot_file.resolve().as_posix()}")
+
+    exit_code, stdout_text, stderr_text, timed_out, wid_tel = _exec_godot_with_optional_wid(
+        godot_exe=godot_exe,
+        base_args_after_mode=base_args,
+        user_args=user_args,
         cwd=stage_dir,
         env=child_env,
+        exec_fn=exec_fn,
+        use_real_wid_window=use_real_wid_window,
+        ui_wid=ui_wid,
         timeout_seconds=timeout_seconds,
     )
     _write_utf8_no_bom(evidence_dir / "fus_host_stdout.log", stdout_text)
@@ -3326,10 +3764,21 @@ def _run_staged_fus_host_probe(
     for item in payload.get("failures", []):
         host_failures.append(str(item))
 
+    resolved_shot: Path | None = None
+    if ui_wid:
+        if wid_tel.get("parent_visible"):
+            host_failures.append("Win32 --wid 隐藏宿主窗口意外可见 (parent_visible == True)。")
+        if screenshot_file.is_file() and screenshot_file.stat().st_size > 0:
+            resolved_shot = screenshot_file
+        elif use_real_wid_window:
+            host_failures.append("FUS --ui-wid 渲染未生成有效的 ui_wid_screenshot.png。")
+
     payload["exit_code"] = exit_code
     payload["timed_out"] = timed_out
     payload["stage_dir"] = str(stage_dir)
-    return payload, host_failures, host_log_errors
+    if wid_tel:
+        payload["ui_wid_telemetry"] = wid_tel
+    return payload, host_failures, host_log_errors, resolved_shot, wid_tel
 
 
 def _default_godot_runner(
@@ -3370,8 +3819,9 @@ def verify_mod_with_host(
     timeout_seconds: int = 120,
     runner: Callable[..., tuple[int, str, str, bool]] | None = None,
     fus_repo: Path | str | None = None,
+    ui_wid: bool = False,
 ) -> HostVerifyResult:
-    """Build (if stale) and verify a plugin package inside isolated headless Godot 4.8-beta1."""
+    """Build (if stale) and verify a plugin package inside isolated headless or `--wid` Godot 4.8-beta1."""
     cfg = config or load_config()
     clean_name = mod_name.strip()
     resolved_godot = cfg.resolve_godot_bin(override_bin=godot_bin)
@@ -3391,6 +3841,10 @@ def verify_mod_with_host(
         raise HostVerifyError(f"安全边界拦截：验证证据目录越出工作区：{evidence_dir}")
     evidence_dir.mkdir(parents=True, exist_ok=True)
 
+    has_fus_repo = fus_repo is not None and bool(str(fus_repo).strip())
+    inworld_wid_direct = bool(ui_wid and (schema in INWORLD_SCHEMAS) and (not has_fus_repo))
+    primary_shot_file = evidence_dir / "ui_wid_screenshot.png"
+
     if schema in INWORLD_SCHEMAS:
         paths = prepare_inworld_probe_workspace(
             archive_path=artifact.zip_path,
@@ -3398,23 +3852,23 @@ def verify_mod_with_host(
             evidence_dir=evidence_dir,
             sample_path=Path(sample_path) if sample_path is not None else None,
         )
-        cmd = [
-            str(resolved_godot),
-            "--headless",
-            "--quit",
+        base_args = [
             "--path",
             str(paths["probe_project"]),
             "--log-file",
             str(paths["godot_log"]),
             "--script",
             "res://inworld_probe.gd",
-            "--",
+        ]
+        user_args = [
             "--pkg-root=res://pkg",
             f"--pkg-archive={artifact.zip_path.resolve().as_posix()}",
             f"--report={paths['report_json'].as_posix()}",
         ]
         if "sample" in paths:
-            cmd.append(f"--sample={paths['sample'].as_posix()}")
+            user_args.append(f"--sample={paths['sample'].as_posix()}")
+        if inworld_wid_direct:
+            user_args.append(f"--ui-screenshot={primary_shot_file.resolve().as_posix()}")
     else:
         paths = prepare_probe_workspace(
             zip_path=artifact.zip_path,
@@ -3422,17 +3876,15 @@ def verify_mod_with_host(
             evidence_dir=evidence_dir,
             sample_path=Path(sample_path) if sample_path is not None else None,
         )
-        cmd = [
-            str(resolved_godot),
-            "--headless",
-            "--quit",
+        base_args = [
             "--path",
             str(paths["probe_project"]),
             "--log-file",
             str(paths["godot_log"]),
             "--script",
             "res://headless_probe.gd",
-            "--",
+        ]
+        user_args = [
             "--pkg-root=res://pkg",
             f"--sample={paths['sample'].as_posix()}",
             f"--report={paths['report_json'].as_posix()}",
@@ -3446,10 +3898,15 @@ def verify_mod_with_host(
     child_env["GODOT_SILENCE_ROOT_WARNING"] = "1"
 
     exec_fn = runner or _default_godot_runner
-    exit_code, stdout_text, stderr_text, timed_out = exec_fn(
-        cmd,
+    exit_code, stdout_text, stderr_text, timed_out, ui_wid_telemetry = _exec_godot_with_optional_wid(
+        godot_exe=resolved_godot,
+        base_args_after_mode=base_args,
+        user_args=user_args,
         cwd=paths["probe_project"],
         env=child_env,
+        exec_fn=exec_fn,
+        use_real_wid_window=(runner is None),
+        ui_wid=inworld_wid_direct,
         timeout_seconds=timeout_seconds,
     )
 
@@ -3485,15 +3942,24 @@ def verify_mod_with_host(
     for rep_fail in report_payload.get("failures", []):
         failures.append(str(rep_fail))
 
+    ui_screenshot_path: Path | None = None
+    if inworld_wid_direct:
+        if ui_wid_telemetry.get("parent_visible"):
+            failures.append("Win32 --wid 隐藏宿主窗口意外可见 (parent_visible == True)。")
+        if primary_shot_file.is_file() and primary_shot_file.stat().st_size > 0:
+            ui_screenshot_path = primary_shot_file
+        elif runner is None:
+            failures.append("局内 --ui-wid 渲染未生成有效的 ui_wid_screenshot.png。")
+
     host_contract_probe: dict[str, Any] = {}
-    if fus_repo is not None and str(fus_repo).strip():
+    if has_fus_repo:
         override_repo = None if str(fus_repo).strip().lower() == "auto" else fus_repo
         try:
             resolved_fus_repo = cfg.resolve_fus_repo_dir(override_repo=override_repo)
         except ConfigError as exc:
             raise HostVerifyError(str(exc)) from exc
         if schema in INWORLD_SCHEMAS:
-            host_contract_probe, host_failures, host_log_errors = _run_staged_fus_host_probe(
+            host_contract_probe, host_failures, host_log_errors, fus_shot, fus_tel = _run_staged_fus_host_probe(
                 fus_repo_dir=resolved_fus_repo,
                 cfg=cfg,
                 godot_exe=resolved_godot,
@@ -3502,9 +3968,19 @@ def verify_mod_with_host(
                 child_env=child_env,
                 exec_fn=exec_fn,
                 timeout_seconds=timeout_seconds,
+                ui_wid=ui_wid,
+                use_real_wid_window=(runner is None),
             )
             failures.extend(host_failures)
             log_errors.extend(host_log_errors)
+            if fus_shot is not None:
+                ui_screenshot_path = fus_shot
+            if fus_tel:
+                ui_wid_telemetry = fus_tel
+
+    warnings_list = [str(w) for w in report_payload.get("warnings", [])]
+    if ui_wid and schema not in INWORLD_SCHEMAS:
+        warnings_list.append("纯局外插件 (fus.session-plugin.v1) 无局内桌面 UI，已自动跳过 --ui-wid 视口截图。")
 
     probe_ok = bool(report_payload.get("ok", False))
     host_ok = bool(host_contract_probe.get("ok", True)) if host_contract_probe else True
@@ -3531,7 +4007,7 @@ def verify_mod_with_host(
         loaded_scripts=[str(x) for x in report_payload.get("loaded_scripts", [])],
         failures=failures,
         log_errors=log_errors,
-        warnings=[str(w) for w in report_payload.get("warnings", [])],
+        warnings=warnings_list,
         entity_count=int(report_payload.get("entity_count", 0)),
         serialized_bytes=int(report_payload.get("serialized_bytes", 0)),
         sdk_probe=(
@@ -3541,6 +4017,8 @@ def verify_mod_with_host(
         ),
         schema=schema,
         host_contract_probe=host_contract_probe,
+        ui_screenshot_path=ui_screenshot_path,
+        ui_wid_telemetry=ui_wid_telemetry,
     )
 
 
@@ -3555,6 +4033,7 @@ def verify_mods_with_host(
     timeout_seconds: int = 120,
     runner: Callable[..., tuple[int, str, str, bool]] | None = None,
     fus_repo: Path | str | None = None,
+    ui_wid: bool = False,
 ) -> list[HostVerifyResult]:
     """Run `verify_mod_with_host` across one or multiple selected mods."""
     cfg = config or load_config()
@@ -3575,6 +4054,7 @@ def verify_mods_with_host(
                 timeout_seconds=timeout_seconds,
                 runner=runner,
                 fus_repo=fus_repo,
+                ui_wid=ui_wid,
             )
         )
     return results

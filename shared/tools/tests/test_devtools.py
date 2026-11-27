@@ -1990,6 +1990,58 @@ func prepare_import(_path: String, _options: Dictionary, _host: RefCounted) -> D
         with self.assertRaises(PckFormatError):
             parse_embedded_pck(bad_entry_path)
 
+    def test_win32_wid_host_and_verify_host_ui_wid_flags(self) -> None:
+        from fuvtt_devtools.win32_wid_host import (
+            HiddenWin32WindowHost,
+            build_wid_godot_args,
+            is_win32_wid_supported,
+        )
+
+        args = build_wid_godot_args(123456, width=1440, height=820, quit_after=900)
+        self.assertNotIn("--headless", args)
+        self.assertIn("--wid", args)
+        self.assertIn("123456", args)
+        self.assertIn("--single-window", args)
+        self.assertIn("gl_compatibility", args)
+        self.assertIn("--quit-after", args)
+
+        if is_win32_wid_supported():
+            with HiddenWin32WindowHost(width=640, height=400) as wid_host:
+                self.assertGreater(wid_host.hwnd, 0)
+                tel = wid_host.snapshot_telemetry()
+                self.assertFalse(tel.parent_visible)
+                self.assertTrue(tel.focus_unchanged)
+            self.assertEqual(wid_host.hwnd, 0)
+
+        scaffold_mod("wid-ui-demo", config=self.cfg, mode="desktop-module")
+        verify_cfg = load_config(
+            self.ws_root,
+            env_file=self.env_file,
+            environ={"GODOT_BIN": str(self.fake_godot_bin)},
+        )
+        seen_cmds: list[list[str]] = []
+
+        def _mock_wid_runner(cmd, *, cwd, env, timeout_seconds):
+            seen_cmds.append(list(cmd))
+            report_arg = [a for a in cmd if a.startswith("--report=")][0].split("=", 1)[1]
+            shot_args = [a for a in cmd if a.startswith("--ui-screenshot=")]
+            if shot_args:
+                shot_path = Path(shot_args[0].split("=", 1)[1])
+                shot_path.write_bytes(b"\x89PNG\r\n\x1a\nmock")
+            Path(report_arg).write_text(
+                json.dumps({"ok": True, "passed_checks": 30, "failures": [], "loaded_scripts": []}),
+                encoding="utf-8",
+            )
+            return 0, "FUVTT_VERIFY_HOST PASS checks=30\n", "", False
+
+        wid_res = verify_mod_with_host("wid-ui-demo", config=verify_cfg, runner=_mock_wid_runner, ui_wid=True)
+        self.assertTrue(wid_res.ok, wid_res.failures)
+        self.assertEqual(len(seen_cmds), 1)
+        self.assertNotIn("--headless", seen_cmds[0])
+        self.assertIn("--wid", seen_cmds[0])
+        self.assertTrue(any(a.startswith("--ui-screenshot=") for a in seen_cmds[0]))
+        self.assertIsNotNone(wid_res.ui_screenshot_path)
+
 
 if __name__ == "__main__":
     unittest.main()

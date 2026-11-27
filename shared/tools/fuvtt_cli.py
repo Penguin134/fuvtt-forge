@@ -29,6 +29,7 @@ from fuvtt_devtools.host_verifier import HostVerifyError, verify_mods_with_host 
 from fuvtt_devtools.packager import PackageError, build_mods  # noqa: E402
 from fuvtt_devtools.scaffold import ScaffoldError, scaffold_mod  # noqa: E402
 from fuvtt_devtools.validator import ValidationError, validate_mods  # noqa: E402
+from fuvtt_devtools.win32_wid_host import Win32WidError  # noqa: E402
 
 
 def _configure_utf8_stdio() -> None:
@@ -160,6 +161,12 @@ def build_parser() -> argparse.ArgumentParser:
         const="auto",
         default=None,
         help="可选：使用只读暂存的官方 FUS 源码仓执行宿主级联动验证（不填路径则读取 FUS_REPO_DIR）",
+    )
+    p_ver.add_argument(
+        "--ui-wid",
+        dest="ui_wid",
+        action="store_true",
+        help="启用 Windows 隐藏宿主窗口 (--wid) 真实渲染校验，挂载宿主主题并输出 PNG 截图证据",
     )
     p_ver.add_argument("--timeout", type=int, default=120, help="单个插件无头校验超时秒数（默认 120）")
 
@@ -344,6 +351,7 @@ def main(
                 godot_bin=args.godot_bin,
                 timeout_seconds=args.timeout,
                 fus_repo=args.fus_repo,
+                ui_wid=args.ui_wid,
             )
             if not results:
                 print("[WARN] mods/ 目录下未找到可验证的插件。")
@@ -363,6 +371,10 @@ def main(
                             f"  FUS 宿主联动校验: ok={vres.host_contract_probe.get('ok')} "
                             f"(checks={vres.host_contract_probe.get('passed_checks', 0)})"
                         )
+                    if vres.ui_screenshot_path is not None:
+                        rel_shot = vres.ui_screenshot_path.relative_to(cfg.workspace_root).as_posix()
+                        focus_ok = vres.ui_wid_telemetry.get("focus_unchanged", True)
+                        print(f"  UI 渲染截图: {rel_shot} (focus_unchanged={focus_ok})")
                     print(f"  验证证据: {rel_ev}")
                     for warn in vres.warnings:
                         print(f"  [WARN] {warn}")
@@ -372,6 +384,9 @@ def main(
                         f"[FAIL] {vres.mod_name} (schema={vres.schema}, exit={vres.exit_code}, timed_out={vres.timed_out}, "
                         f"checks={vres.passed_checks})"
                     )
+                    if vres.ui_screenshot_path is not None:
+                        rel_shot = vres.ui_screenshot_path.relative_to(cfg.workspace_root).as_posix()
+                        print(f"  UI 渲染截图: {rel_shot}")
                     print(f"  验证证据: {rel_ev}")
                     for fail in vres.failures:
                         print(f"  [ERROR] {cfg.redact_path(fail)}")
@@ -390,6 +405,7 @@ def main(
         DeployError,
         PckFormatError,
         HostVerifyError,
+        Win32WidError,
         FileNotFoundError,
     ) as exc:
         msg = active_cfg.redact_path(str(exc)) if active_cfg is not None else str(exc)
