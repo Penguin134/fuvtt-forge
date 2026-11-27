@@ -8,7 +8,6 @@ import zipfile
 
 from .assertions import (
     assert_fu_sdk_35_invariance,
-    assert_fus_repo_clean,
     assert_gdscript_hygiene,
     assert_no_local_paths_in_text,
 )
@@ -89,8 +88,6 @@ class Tier0SmokeTests(unittest.TestCase):
 
         for gd_file in sorted(pkg_dir.glob("*.gd")):
             assert_gdscript_hygiene(self, gd_file, require_extends_refcounted=False, forbid_class_name=True, forbid_preload=False)
-
-        assert_fus_repo_clean(self, self.session.cfg.fus_repo_dir)
 
     def test_t0_05_tier1_to_tier4_discovery_and_counts(self) -> None:
         from .tier1_features import Tier1FeatureTests

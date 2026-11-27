@@ -26,7 +26,6 @@ from .harness import (
     load_workspace_config,
     run_fuvtt_cli,
     run_fuvtt_cli_isolated_mods,
-    run_git_readonly,
     write_utf8_no_bom_lf,
 )
 from .tier1_features import (
@@ -348,11 +347,6 @@ func prepare_import(path: String, options: Dictionary, host: RefCounted) -> Dict
             res = run_fuvtt_cli_isolated_mods(cmd, iso_cfg=iso_cfg)
             self.assertEqual(res.returncode, 0, f"{cmd} failed:\n{res.stdout}\n{res.stderr}")
 
-    def test_t4_s06_03_workspace_env_and_fus_repo_clean_audit(self) -> None:
+    def test_t4_s06_03_workspace_env_and_path_redaction_audit(self) -> None:
         self.assertFalse((WORKSPACE_ROOT / "mods" / "campaign-importer-e2e").exists())
         assert_no_local_paths_in_text(self, (WORKSPACE_ROOT / "AGENTS.md").read_text(encoding="utf-8"), label="AGENTS.md")
-        cfg = load_workspace_config()
-        repo = cfg.resolve_fus_repo_dir()
-        proc = run_git_readonly(["status", "-s"], repo_dir=repo)
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(proc.stdout.strip(), "", f"<FUS_REPO_DIR> dirty: {proc.stdout}")

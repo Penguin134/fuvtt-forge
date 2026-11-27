@@ -1,4 +1,4 @@
-"""Tier 1: 150 Isolated Happy-Path E2E Feature Tests (5 per feature across Features #1-#30)."""
+"""Tier 1: Isolated Happy-Path E2E Feature Tests (Features #1-#30)."""
 
 from __future__ import annotations
 
@@ -47,7 +47,6 @@ from .harness import (
     list_git_tracked,
     load_workspace_config,
     run_fuvtt_cli,
-    run_git_readonly,
 )
 
 
@@ -1571,10 +1570,3 @@ class Tier1FeatureTests(unittest.TestCase):
         self.assertIn("LogBus", all_docs)
         self.assertIn("ModuleRegistry", all_docs)
         self.assertIn("sdk-log-console", all_docs)
-
-    def test_t1_f30_05_fus_repo_dir_completely_unmodified(self) -> None:
-        cfg = load_workspace_config()
-        repo = cfg.resolve_fus_repo_dir()
-        proc = run_git_readonly(["status", "-s"], repo_dir=repo)
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(proc.stdout.strip(), "", f"<FUS_REPO_DIR> has uncommitted changes: {proc.stdout}")

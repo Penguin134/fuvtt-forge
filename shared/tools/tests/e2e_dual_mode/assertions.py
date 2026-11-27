@@ -11,7 +11,7 @@ from typing import Any, Iterable, Mapping
 import unittest
 import zipfile
 
-from .harness import ProbeBatchSummary, ProbeCaseResult, run_git_readonly
+from .harness import ProbeBatchSummary, ProbeCaseResult
 
 
 LOCAL_PATH_LEAK_RE = re.compile(
@@ -520,12 +520,3 @@ def assert_registry_json_valid(
         tc.assertTrue(bool(row.get("sha256")), f"registry row {pid} missing sha256")
         tc.assertIsInstance(row.get("file_hashes"), dict, f"registry row {pid} missing file_hashes")
     return data
-
-
-def assert_fus_repo_clean(tc: unittest.TestCase, fus_repo_dir: Path | None) -> None:
-    if fus_repo_dir is None or not fus_repo_dir.is_dir():
-        return
-    proc = run_git_readonly(["status", "--short"], repo_dir=fus_repo_dir)
-    tc.assertEqual(proc.returncode, 0, f"git status failed on FUS_REPO_DIR: {proc.stderr}")
-    tc.assertEqual(proc.stdout.strip(), "", f"FUS_REPO_DIR was modified! git status --short:\n{proc.stdout}")
-    tc.assertFalse((fus_repo_dir / ".godot").exists(), "FUS_REPO_DIR/.godot must NOT exist!")

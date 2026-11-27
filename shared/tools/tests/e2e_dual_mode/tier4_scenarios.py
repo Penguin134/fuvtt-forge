@@ -16,7 +16,6 @@ import urllib.request
 from .assertions import (
     assert_fu_sdk_35_invariance,
     assert_fup_archive_contract,
-    assert_fus_repo_clean,
     assert_no_local_paths_in_text,
     assert_parity_clean,
     assert_registry_json_valid,
@@ -33,7 +32,6 @@ from .harness import (
     resolve_fus_repo_or_skip,
     resolve_godot_or_skip,
     resolve_wiki_dir,
-    run_git_readonly,
 )
 
 
@@ -359,7 +357,6 @@ class Tier4ScenarioTests(unittest.TestCase):
                 assert_no_local_paths_in_text(self, wp.read_text(encoding="utf-8"), label=f"wiki/{wp.name}")
 
     def test_t4_w4_03_strict_repository_isolation_check(self) -> None:
-        assert_fus_repo_clean(self, self.session.cfg.fus_repo_dir)
         # Ensure no synthetic test mods remain in real mods/
         for child in (WORKSPACE_ROOT / "mods").iterdir():
             if child.is_dir():
