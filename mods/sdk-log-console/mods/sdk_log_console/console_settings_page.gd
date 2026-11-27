@@ -29,6 +29,10 @@ func _wire_ui() -> void:
 		if not lvl_opt.item_selected.is_connected(_on_min_level_selected):
 			lvl_opt.item_selected.connect(_on_min_level_selected)
 
+	var max_spin := get_node_or_null("%MaxCharsSpinBox") as SpinBox
+	if max_spin != null and not max_spin.value_changed.is_connected(_on_max_chars_changed):
+		max_spin.value_changed.connect(_on_max_chars_changed)
+
 	var vis_chk := get_node_or_null("%ConsoleVisibleCheck") as CheckButton
 	if vis_chk != null and not vis_chk.toggled.is_connected(_on_console_visible_toggled):
 		vis_chk.toggled.connect(_on_console_visible_toggled)
@@ -126,6 +130,7 @@ func refresh() -> void:
 	_syncing = true
 	var console_open: bool = false
 	var min_lvl: String = "debug"
+	var max_chars: int = 2048
 	var cap_hooks: bool = true
 	var cap_engine: bool = true
 	var cap_imported: bool = true
@@ -136,6 +141,8 @@ func refresh() -> void:
 			console_open = bool(p.call(&"is_console_visible"))
 		if p.has_method(&"get_min_level"):
 			min_lvl = str(p.call(&"get_min_level")).to_lower()
+		if p.has_method(&"get_max_message_chars"):
+			max_chars = int(p.call(&"get_max_message_chars"))
 		if p.has_method(&"get_capture_config"):
 			var cfg_var: Variant = p.call(&"get_capture_config")
 			if cfg_var is Dictionary:
@@ -147,9 +154,10 @@ func refresh() -> void:
 			var sum_var: Variant = p.call(&"get_status_summary")
 			if sum_var is Dictionary:
 				var st := sum_var as Dictionary
+				var max_label: String = "不限" if max_chars <= 0 else ("%d 字符" % max_chars)
 				status_text = (
 					"模块: %s (local_only=%s, net_ver=%s)\n"
-					+ "窗口: %s | 缓存日志: %d 条 | 最低级别: %s\n"
+					+ "窗口: %s | 缓存日志: %d 条 | 最低级别: %s | 单条上限: %s\n"
 					+ "角色: %s (GM=%s) | 实体数: %d | 引擎日志增量: %d | 导入历史: %d 条"
 				) % [
 					str(st.get("module_id", "mod.sdk_log_console")),
@@ -158,6 +166,7 @@ func refresh() -> void:
 					"开启" if console_open else "关闭",
 					int(st.get("entry_count", 0)),
 					min_lvl.to_upper(),
+					max_label,
 					str(st.get("network_role", "solo")),
 					str(st.get("is_gm", false)),
 					int(st.get("entity_count", 0)),
@@ -183,6 +192,11 @@ func refresh() -> void:
 		if idx < lvl_opt.item_count:
 			lvl_opt.select(idx)
 		lvl_opt.disabled = (p == null)
+
+	var max_spin := get_node_or_null("%MaxCharsSpinBox") as SpinBox
+	if max_spin != null:
+		max_spin.set_value_no_signal(float(max_chars))
+		max_spin.editable = (p != null)
 
 	var hooks_chk := get_node_or_null("%CaptureHooksCheck") as CheckButton
 	if hooks_chk != null:
@@ -240,6 +254,15 @@ func _on_min_level_selected(index: int) -> void:
 	var p := _provider()
 	if p != null and p.has_method(&"set_min_level"):
 		p.call(&"set_min_level", _LEVEL_ORDER[index])
+	refresh()
+
+
+func _on_max_chars_changed(new_value: float) -> void:
+	if _syncing:
+		return
+	var p := _provider()
+	if p != null and p.has_method(&"set_max_message_chars"):
+		p.call(&"set_max_message_chars", int(round(new_value)))
 	refresh()
 
 

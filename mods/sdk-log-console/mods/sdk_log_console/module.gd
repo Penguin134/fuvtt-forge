@@ -26,6 +26,9 @@ const _WINDOW_RES_PATH := "res://mods/sdk_log_console/console_floating_window.ts
 
 const _MAX_CACHED_ENTRIES: int = 512
 const _ENGINE_TAIL_WINDOW: int = 64
+const DEFAULT_MAX_MESSAGE_CHARS: int = 2048
+const MIN_CUSTOM_MESSAGE_CHARS: int = 64
+const MAX_CUSTOM_MESSAGE_CHARS: int = 16384
 const _LEVEL_INT_BY_NAME: Dictionary = {
 	"debug": 10,
 	"info": 20,
@@ -55,11 +58,13 @@ var _slot_helper: RefCounted = null
 var _window: Control = null
 var _mounted_via_floating_panel: bool = false
 var _mounted_via_slot_token: bool = false
+var _window_revert_registered: bool = false
 var _log_sub_token: int = -1
 var _custom_diag_hook: StringName = &""
 
-var _console_visible: bool = false
+var _console_visible: bool = true
 var _min_level: String = "debug"
+var _max_message_chars: int = DEFAULT_MAX_MESSAGE_CHARS
 var _capture_hooks: bool = true
 var _capture_engine: bool = true
 var _capture_imported: bool = true
@@ -162,34 +167,75 @@ func _on_register(context: ExtensionContext) -> void:
 		if not bool(reg_res.get("ok", false)) and _logger != null:
 			_logger.call(&"warn", PLUGIN_ID, "ui.module_settings registration failed", reg_res)
 
-	# 实例化并挂载悬浮终端窗口（默认隐藏；优先 mount_floating_panel，回退 SlotHelper.mount_node）
+	# 缓存悬浮终端窗口场景，并推迟到 FeatureManager 结束 _staged 暂存发布后挂载
+	# （_on_register 期间可选模块处于 ctx._staged == true，ctx.get_screen_host() 依契约返回 null）
 	_window_scene_cache = _load_local_scene(_WINDOW_REL_PATH, _WINDOW_RES_PATH)
-	if _window_scene_cache != null:
-		var raw_win: Node = _window_scene_cache.instantiate()
-		if raw_win is Control:
-			_window = raw_win as Control
-			if _window.has_method(&"bind_provider"):
-				_window.call(&"bind_provider", self)
-			if _window.has_method(&"set_console_open"):
-				_window.call(&"set_console_open", false)
-			var screen_host: Node = context.get_screen_host()
-			if is_instance_valid(screen_host) and screen_host.has_method(&"mount_floating_panel"):
-				if bool(screen_host.call(&"mount_floating_panel", _window)):
-					_mounted_via_floating_panel = true
-					context.add_revert(Callable(self, &"_teardown_window"), "sdk_log_console:floating_window")
-			elif is_instance_valid(screen_host) and _slot_helper != null:
-				var mount_res: Dictionary = _slot_helper.call(&"mount_node", screen_host, _window)
-				if bool(mount_res.get("ok", false)):
-					_mounted_via_slot_token = true
-			if _window.get_parent() == null:
-				if _window.has_method(&"deactivate"):
-					_window.call(&"deactivate")
-				_window.free()
-				_window = null
-		elif raw_win != null:
-			raw_win.free()
+	if has_method(&"_defer_registered"):
+		call(&"_defer_registered", &"_on_deferred_mount")
+	else:
+		call_deferred(&"_on_deferred_mount")
 
 	_emit_startup_telemetry(context)
+
+
+func _on_deferred_mount() -> void:
+	if _retiring or not _registered or ctx == null or not ctx.is_active():
+		return
+	var win := _ensure_window_mounted()
+	if is_instance_valid(win) and win.has_method(&"set_console_open"):
+		win.call(&"set_console_open", _console_visible)
+	console_state_changed.emit()
+
+
+func _ensure_window_mounted() -> Control:
+	if is_instance_valid(_window):
+		if _window.get_parent() != null:
+			return _window
+		if _window.has_method(&"deactivate"):
+			_window.call(&"deactivate")
+		_window.free()
+		_window = null
+	if _retiring or not _registered or ctx == null or not ctx.is_active():
+		return null
+	if _window_scene_cache == null:
+		_window_scene_cache = _load_local_scene(_WINDOW_REL_PATH, _WINDOW_RES_PATH)
+	if _window_scene_cache == null:
+		return null
+
+	var screen_host: Node = ctx.get_screen_host() if ctx.has_method(&"get_screen_host") else null
+	if not is_instance_valid(screen_host):
+		return null
+
+	var raw_win: Node = _window_scene_cache.instantiate()
+	if not (raw_win is Control):
+		if raw_win != null:
+			raw_win.free()
+		return null
+
+	_window = raw_win as Control
+	if _window.has_method(&"bind_provider"):
+		_window.call(&"bind_provider", self)
+	if _window.has_method(&"set_console_open"):
+		_window.call(&"set_console_open", _console_visible)
+
+	if screen_host.has_method(&"mount_floating_panel"):
+		if bool(screen_host.call(&"mount_floating_panel", _window)):
+			_mounted_via_floating_panel = true
+			if not _window_revert_registered:
+				_window_revert_registered = true
+				ctx.add_revert(Callable(self, &"_teardown_window"), "sdk_log_console:floating_window")
+	elif _slot_helper != null:
+		var mount_res: Dictionary = _slot_helper.call(&"mount_node", screen_host, _window)
+		if bool(mount_res.get("ok", false)):
+			_mounted_via_slot_token = true
+
+	if _window.get_parent() == null:
+		if _window.has_method(&"deactivate"):
+			_window.call(&"deactivate")
+		_window.free()
+		_window = null
+		return null
+	return _window
 
 
 func _teardown_window() -> void:
@@ -206,6 +252,7 @@ func _teardown_window() -> void:
 
 func _on_unregister() -> void:
 	_teardown_window()
+	_window_revert_registered = false
 	if _logger != null and _log_sub_token >= 0:
 		_logger.call(&"unsubscribe", _log_sub_token)
 	_log_sub_token = -1
@@ -286,8 +333,8 @@ func _on_hook_1(payload: Variant, hook_name: String) -> void:
 		detail = JSON.stringify(payload)
 	else:
 		detail = str(payload)
-	if detail.length() > 180:
-		detail = detail.left(180) + "..."
+	if detail.length() > MAX_CUSTOM_MESSAGE_CHARS:
+		detail = detail.left(MAX_CUSTOM_MESSAGE_CHARS) + "..."
 	_log("info", "hook." + hook_name, detail if not detail.is_empty() else "triggered")
 
 
@@ -322,6 +369,8 @@ func is_console_visible() -> bool:
 
 func set_console_visible(visible: bool) -> void:
 	_console_visible = visible
+	if visible:
+		_ensure_window_mounted()
 	if is_instance_valid(_window) and _window.has_method(&"set_console_open"):
 		_window.call(&"set_console_open", visible)
 	console_state_changed.emit()
@@ -333,6 +382,8 @@ func toggle_console() -> bool:
 
 
 func get_floating_window() -> Control:
+	if not is_instance_valid(_window) and ctx != null and ctx.is_active():
+		_ensure_window_mounted()
 	return _window if is_instance_valid(_window) else null
 
 
@@ -348,6 +399,21 @@ func set_min_level(level: String) -> void:
 	if _logger != null:
 		_logger.call(&"set_min_level", int(_LEVEL_INT_BY_NAME[clean]))
 	_log("info", "console.config", "min_level=%s" % clean)
+	console_state_changed.emit()
+
+
+func get_max_message_chars() -> int:
+	return _max_message_chars
+
+
+func set_max_message_chars(max_chars: int) -> void:
+	var normalized: int = 0 if max_chars <= 0 else clampi(max_chars, MIN_CUSTOM_MESSAGE_CHARS, MAX_CUSTOM_MESSAGE_CHARS)
+	if normalized == _max_message_chars:
+		return
+	_max_message_chars = normalized
+	var label_str: String = "unlimited" if _max_message_chars == 0 else str(_max_message_chars)
+	_log("info", "console.config", "max_message_chars=%s" % label_str)
+	logs_changed.emit()
 	console_state_changed.emit()
 
 
@@ -540,6 +606,7 @@ func get_status_summary() -> Dictionary:
 		"network_version": 0,
 		"console_visible": _console_visible,
 		"min_level": _min_level,
+		"max_message_chars": _max_message_chars,
 		"entry_count": _entries_cache.size(),
 		"is_gm": is_gm_flag,
 		"network_role": role,
@@ -563,16 +630,17 @@ func run_console_command(command: String) -> String:
 
 	match cmd:
 		"help", "?":
-			reply = "Commands: help | status | clear | level <debug|info|warning|error> | hooks | engine | imported | entities"
+			reply = "Commands: help | status | clear | level <debug|info|warning|error> | maxlen <0|64..16384> | hooks | engine | imported | entities"
 			_log("info", "cmd.help", reply)
 		"status":
 			var st := get_status_summary()
-			reply = "status: module=%s local_only=%s role=%s gm=%s entries=%d entities=%d" % [
+			reply = "status: module=%s local_only=%s role=%s gm=%s entries=%d maxlen=%d entities=%d" % [
 				str(st.get("module_id", MODULE_ID)),
 				str(st.get("local_only", true)),
 				str(st.get("network_role", "solo")),
 				str(st.get("is_gm", false)),
 				int(st.get("entry_count", 0)),
+				int(st.get("max_message_chars", DEFAULT_MAX_MESSAGE_CHARS)),
 				int(st.get("entity_count", 0)),
 			]
 			_log("info", "cmd.status", reply)
@@ -587,6 +655,23 @@ func run_console_command(command: String) -> String:
 			else:
 				reply = "current min_level=%s (usage: level <debug|info|warning|error>)" % _min_level
 			_log("info", "cmd.level", reply)
+		"maxlen":
+			if parts.size() >= 2:
+				var arg_raw: String = parts[1].strip_edges().to_lower()
+				if arg_raw in ["0", "off", "none", "unlimited", "all"]:
+					set_max_message_chars(0)
+					reply = "max_message_chars set to 0 (unlimited)"
+				elif arg_raw.is_valid_int():
+					set_max_message_chars(arg_raw.to_int())
+					reply = "max_message_chars set to %d" % _max_message_chars
+				else:
+					reply = "invalid maxlen '%s' (usage: maxlen <0|64..16384>, 0=unlimited)" % parts[1]
+			else:
+				reply = "current max_message_chars=%d (%s; usage: maxlen <0|64..16384>)" % [
+					_max_message_chars,
+					"unlimited" if _max_message_chars == 0 else "chars",
+				]
+			_log("info", "cmd.maxlen", reply)
 		"hooks":
 			reply = "hook_counts=%s" % JSON.stringify(_hook_counts)
 			_log("info", "cmd.hooks", reply)

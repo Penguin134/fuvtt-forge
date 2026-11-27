@@ -2,6 +2,10 @@ extends PanelContainer
 
 const _FILTER_ORDER: Array[String] = ["all", "debug", "info", "warning", "error"]
 const _FILTER_LABELS: Array[String] = ["ALL", "DEBUG", "INFO", "WARNING", "ERROR"]
+const _MSG_WHITE_HEX: String = "#f5f5f7"
+const _SEQ_MUTED_HEX: String = "#98989d"
+const _SOURCE_CYAN_HEX: String = "#64d2ff"
+const _EMPTY_HINT_HEX: String = "#aeaeb2"
 
 var _provider_ref: WeakRef = null
 var _dragging: bool = false
@@ -9,7 +13,7 @@ var _drag_offset: Vector2 = Vector2.ZERO
 var _level_filter: String = "all"
 var _search_query: String = ""
 var _rendered_text: String = ""
-var _console_open: bool = false
+var _console_open: bool = true
 var _ui_wired: bool = false
 
 
@@ -157,7 +161,10 @@ func refresh_logs() -> void:
 	var p := _provider()
 	var filtered: Array = []
 	var total_count: int = 0
+	var max_chars: int = 2048
 	if p != null:
+		if p.has_method(&"get_max_message_chars"):
+			max_chars = int(p.call(&"get_max_message_chars"))
 		if p.has_method(&"get_console_entries"):
 			var f_var: Variant = p.call(&"get_console_entries", _level_filter, _search_query)
 			if f_var is Array:
@@ -176,21 +183,26 @@ func refresh_logs() -> void:
 		var lvl: String = str(entry.get("level_name", "INFO")).to_upper()
 		var src: String = str(entry.get("source", "sdk"))
 		var msg: String = str(entry.get("message", ""))
+		if max_chars > 0 and msg.length() > max_chars:
+			msg = msg.left(max_chars) + "..."
 		var plain_line: String = "#%03d [%s][%s] %s" % [seq, lvl, src, msg]
 		plain_lines.append(plain_line)
 		var color_hex: String = _color_for_level(lvl)
-		bb_lines.append("[color=#7a8a9e]#%03d[/color] [color=%s][%s][/color][color=#8ecae6][%s][/color] %s" % [
+		bb_lines.append("[color=%s]#%03d[/color] [color=%s][%s][/color][color=%s][%s][/color] [color=%s]%s[/color]" % [
+			_SEQ_MUTED_HEX,
 			seq,
 			color_hex,
 			_escape_bbcode(lvl),
+			_SOURCE_CYAN_HEX,
 			_escape_bbcode(src),
+			_MSG_WHITE_HEX,
 			_escape_bbcode(msg),
 		])
 
 	if plain_lines.is_empty():
 		var empty_msg: String = "(暂无匹配日志，可输入 help 查看本地诊断命令)"
 		plain_lines.append(empty_msg)
-		bb_lines.append("[color=#7a8a9e]%s[/color]" % _escape_bbcode(empty_msg))
+		bb_lines.append("[color=%s]%s[/color]" % [_EMPTY_HINT_HEX, _escape_bbcode(empty_msg)])
 
 	_rendered_text = "\n".join(plain_lines)
 	var log_rt := get_node_or_null("%LogOutput") as RichTextLabel
@@ -205,13 +217,13 @@ func refresh_logs() -> void:
 func _color_for_level(lvl: String) -> String:
 	match lvl:
 		"ERROR":
-			return "#ff6b6b"
+			return "#ff453a"
 		"WARNING":
-			return "#ffd166"
+			return "#ffd60a"
 		"INFO":
-			return "#7ae582"
+			return "#32d74b"
 		_:
-			return "#9bb1ff"
+			return "#5ac8fa"
 
 
 func _escape_bbcode(text: String) -> String:
@@ -297,12 +309,16 @@ func _on_header_gui_input(event: InputEvent) -> void:
 				accept_event()
 	elif event is InputEventMouseMotion and _dragging:
 		var target_pos: Vector2 = get_global_mouse_position() - _drag_offset
+		var bounds_rect: Rect2 = get_viewport_rect()
 		var parent_ctrl := get_parent() as Control
 		if is_instance_valid(parent_ctrl):
 			var parent_rect: Rect2 = parent_ctrl.get_global_rect()
-			var max_x: float = maxf(parent_rect.position.x, parent_rect.end.x - size.x)
-			var max_y: float = maxf(parent_rect.position.y, parent_rect.end.y - size.y)
-			target_pos.x = clampf(target_pos.x, parent_rect.position.x, max_x)
-			target_pos.y = clampf(target_pos.y, parent_rect.position.y, max_y)
+			if parent_rect.size.x > 1.0 and parent_rect.size.y > 1.0:
+				bounds_rect = parent_rect
+		if bounds_rect.size.x > 1.0 and bounds_rect.size.y > 1.0:
+			var max_x: float = maxf(bounds_rect.position.x, bounds_rect.end.x - size.x)
+			var max_y: float = maxf(bounds_rect.position.y, bounds_rect.end.y - size.y)
+			target_pos.x = clampf(target_pos.x, bounds_rect.position.x, max_x)
+			target_pos.y = clampf(target_pos.y, bounds_rect.position.y, max_y)
 		global_position = target_pos
 		accept_event()

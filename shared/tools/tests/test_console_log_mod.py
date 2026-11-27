@@ -941,6 +941,7 @@ class _MockRuntime:
 	var _screen_host: Control
 	var _services: Dictionary = {}
 	var _gen: int = 1
+	var _registration_stage: bool = false
 
 	func setup(desktop: Node, screen_host: Control) -> void:
 		_desktop_ref = weakref(desktop)
@@ -963,7 +964,8 @@ class _MockRuntime:
 
 	func create_context(ext_owner: Node) -> ExtensionContext:
 		var ctx := ExtensionContext.new()
-		ctx._bind(ext_owner, self, _gen, false)
+		var staged: bool = _registration_stage and not bool(ext_owner.get_meta(&"module_core", false))
+		ctx._bind(ext_owner, self, _gen, staged)
 		return ctx
 
 	func publish_service_entry(service_id: String, service: Object) -> void:
@@ -1054,10 +1056,20 @@ func _run_one_lifecycle(
 
 	var mod_inst := mod_scene.instantiate() as ExtensionBase
 	mod_inst.set_meta(&"module_id", "mod.sdk_log_console")
-	mod_inst.set_meta(&"module_core", true)
+	mod_inst.set_meta(&"module_core", false)
+	runtime._registration_stage = true
 	features.add_child(mod_inst)
+	runtime._registration_stage = false
+
+	var staged_screen_host_was_null: bool = mod_inst.ctx != null and (not mod_inst.ctx.is_active()) and mod_inst.ctx.get_screen_host() == null
+	var staged_no_premature_mount: bool = screen_host.get_child_count() == 0
+	if mod_inst.ctx != null:
+		mod_inst.ctx.publish()
+	mod_inst.flush_deferred_registrations()
 
 	var out: Dictionary = {
+		"staged_screen_host_was_null": staged_screen_host_was_null,
+		"staged_no_premature_mount": staged_no_premature_mount,
 		"ctx_active": mod_inst.ctx != null and mod_inst.ctx.is_active(),
 		"net_actions_count": runtime.slots.get_items(&"network.actions").size(),
 		"net_projections_count": runtime.slots.get_items(&"network.projections").size(),
@@ -1089,16 +1101,38 @@ func _run_one_lifecycle(
 		var win := mod_inst.call(&"get_floating_window") as Control
 		out["initial_visible"] = bool(mod_inst.call(&"is_console_visible"))
 		out["initial_window_open"] = bool(win.call(&"is_console_open")) if is_instance_valid(win) else false
+		out["initial_node_visible"] = win.visible if is_instance_valid(win) else false
 		out["window_mounted_to_screen_host"] = is_instance_valid(win) and win.get_parent() == screen_host
 
 		if exercise_interactions and is_instance_valid(win):
 			var vis_chk := settings_ctrl.get_node_or_null("%ConsoleVisibleCheck") as CheckButton
-			vis_chk.set_pressed(true)
-			out["after_open_visible"] = bool(mod_inst.call(&"is_console_visible"))
-			out["after_open_window_open"] = bool(win.call(&"is_console_open"))
-			out["after_open_node_visible"] = win.visible
+			vis_chk.set_pressed(false)
+			out["after_first_close_visible"] = bool(mod_inst.call(&"is_console_visible"))
+			out["after_first_close_window_open"] = bool(win.call(&"is_console_open"))
+			out["after_first_close_node_visible"] = win.visible
 
-			runtime.hooks.emit_hook(&"dice.rolled", [{"expr": "1d20", "total": 18}])
+			# Regression: lazy remount if _teardown_window() freed _window while module remains active
+			mod_inst.call(&"_teardown_window")
+			out["after_teardown_window_null"] = (mod_inst.get(&"_window") == null)
+			vis_chk.set_pressed(true)
+			win = mod_inst.call(&"get_floating_window") as Control
+			out["after_open_visible"] = bool(mod_inst.call(&"is_console_visible"))
+			out["after_open_window_open"] = bool(win.call(&"is_console_open")) if is_instance_valid(win) else false
+			out["after_open_node_visible"] = win.visible if is_instance_valid(win) else false
+			out["after_lazy_remount_parent_ok"] = is_instance_valid(win) and win.get_parent() == screen_host
+
+			runtime.hooks.emit_hook(&"dice.rolled", [{
+				"actor_name": "主持",
+				"d20_values": [],
+				"dice": [{"burst": false, "loser": false, "set": 0, "subtract": false, "type": "d6", "value": 4}],
+				"expr": "1d6",
+				"is_nat1": false,
+				"is_nat20": false,
+				"label": "",
+				"modifier": 0,
+				"total": 18,
+				"tail_marker": "DICE_FULL_TAIL_OK",
+			}])
 			runtime.hooks.emit_hook(&"combat.started", [{"round": 1}])
 			runtime.hooks.emit_hook(&"mode.changed", ["select", "build"])
 			runtime.hooks.emit_hook(&"mod.sdk_log_console.diagnostic", [{"level": "warning", "source": "probe.custom", "message": "CUSTOM_HOOK_WARNING_OK"}])
@@ -1113,8 +1147,27 @@ func _run_one_lifecycle(
 			var rendered_all: String = str(win.call(&"get_rendered_log_text"))
 			var log_rt := win.get_node_or_null("%LogOutput") as RichTextLabel
 			var parsed_all: String = log_rt.get_parsed_text() if log_rt != null else ""
+			var raw_bbcode: String = log_rt.text if log_rt != null else ""
+			var title_lbl := win.get_node_or_null("%TitleLabel") as Label
+			var cmd_in := win.get_node_or_null("%CommandInput") as LineEdit
 			out["rendered_all"] = rendered_all
 			out["parsed_all"] = parsed_all
+			out["default_max_chars"] = int(mod_inst.call(&"get_max_message_chars"))
+			out["dice_full_tail_default_ok"] = rendered_all.contains("DICE_FULL_TAIL_OK")
+			var max_spin := settings_ctrl.get_node_or_null("%MaxCharsSpinBox") as SpinBox
+			if max_spin != null:
+				max_spin.value = 80.0
+			out["after_spin_80_max_chars"] = int(mod_inst.call(&"get_max_message_chars"))
+			out["after_spin_80_truncated"] = not str(win.call(&"get_rendered_log_text")).contains("DICE_FULL_TAIL_OK")
+			mod_inst.call(&"run_console_command", "maxlen 0")
+			out["after_cmd_0_max_chars"] = int(mod_inst.call(&"get_max_message_chars"))
+			out["after_cmd_0_spin_synced"] = int(round(max_spin.value)) == 0 if max_spin != null else false
+			out["after_cmd_0_restored_tail"] = str(win.call(&"get_rendered_log_text")).contains("DICE_FULL_TAIL_OK")
+			mod_inst.call(&"run_console_command", "maxlen 2048")
+			out["bbcode_wraps_white_msg"] = raw_bbcode.contains("[color=#f5f5f7]")
+			out["log_has_white_default_override"] = log_rt != null and log_rt.has_theme_color_override(&"default_color") and log_rt.get_theme_color(&"default_color").r >= 0.90
+			out["title_has_white_font_override"] = title_lbl != null and title_lbl.has_theme_color_override(&"font_color") and title_lbl.get_theme_color(&"font_color").r >= 0.90
+			out["cmd_has_white_font_override"] = cmd_in != null and cmd_in.has_theme_color_override(&"font_color") and cmd_in.get_theme_color(&"font_color").r >= 0.90
 
 			win.call(&"set_filter", "warning", "CUSTOM_HOOK_WARNING_OK")
 			out["filtered_warn"] = str(win.call(&"get_rendered_log_text"))
@@ -1481,14 +1534,22 @@ class TestConsoleLogModInWorldHeadlessGodot(unittest.TestCase):
 
     def test_module_settings_ui_toggles_floating_console_window(self) -> None:
         r = self.inworld_result
+        self.assertIs(r.get("staged_screen_host_was_null"), True)
+        self.assertIs(r.get("staged_no_premature_mount"), True)
         self.assertEqual(r.get("settings_items_count"), 1)
         self.assertIs(r.get("settings_bind_ok"), True)
         self.assertIs(r.get("window_mounted_to_screen_host"), True)
-        self.assertIs(r.get("initial_visible"), False)
-        self.assertIs(r.get("initial_window_open"), False)
+        self.assertIs(r.get("initial_visible"), True)
+        self.assertIs(r.get("initial_window_open"), True)
+        self.assertIs(r.get("initial_node_visible"), True)
+        self.assertIs(r.get("after_first_close_visible"), False)
+        self.assertIs(r.get("after_first_close_window_open"), False)
+        self.assertIs(r.get("after_first_close_node_visible"), False)
+        self.assertIs(r.get("after_teardown_window_null"), True)
         self.assertIs(r.get("after_open_visible"), True)
         self.assertIs(r.get("after_open_window_open"), True)
         self.assertIs(r.get("after_open_node_visible"), True)
+        self.assertIs(r.get("after_lazy_remount_parent_ok"), True)
         self.assertIs(r.get("after_close_visible"), False)
         self.assertIs(r.get("after_close_window_open"), False)
         self.assertIs(r.get("after_close_node_visible"), False)
@@ -1513,6 +1574,17 @@ class TestConsoleLogModInWorldHeadlessGodot(unittest.TestCase):
         filtered = str(r.get("filtered_warn", ""))
         self.assertIn("CUSTOM_HOOK_WARNING_OK", filtered)
         self.assertNotIn("SAVED_IMPORT_MARKER_OK", filtered)
+        self.assertIs(r.get("bbcode_wraps_white_msg"), True)
+        self.assertIs(r.get("log_has_white_default_override"), True)
+        self.assertIs(r.get("title_has_white_font_override"), True)
+        self.assertIs(r.get("cmd_has_white_font_override"), True)
+        self.assertEqual(r.get("default_max_chars"), 2048)
+        self.assertIs(r.get("dice_full_tail_default_ok"), True)
+        self.assertEqual(r.get("after_spin_80_max_chars"), 80)
+        self.assertIs(r.get("after_spin_80_truncated"), True)
+        self.assertEqual(r.get("after_cmd_0_max_chars"), 0)
+        self.assertIs(r.get("after_cmd_0_spin_synced"), True)
+        self.assertIs(r.get("after_cmd_0_restored_tail"), True)
 
     def test_clean_unregister_teardown_zero_objectdb_leaks(self) -> None:
         r = self.inworld_result

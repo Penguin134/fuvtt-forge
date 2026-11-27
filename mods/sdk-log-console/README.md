@@ -47,10 +47,10 @@
 
 ### 局内设置页与悬浮终端窗口（`mods/sdk_log_console/`）
 
-- **设置页（`ui.module_settings` -> `console_settings_page.tscn`）**：提供开启/关闭悬浮终端控制台窗口、切换最低采集级别（`DEBUG`/`INFO`/`WARNING`/`ERROR`）、HookBus 捕获开关、引擎日志采集开关、GM 导入历史回显开关、清空缓冲与实时诊断摘要。
+- **设置页（`ui.module_settings` -> `console_settings_page.tscn`）**：提供开启/关闭悬浮终端控制台窗口、切换最低采集级别（`DEBUG`/`INFO`/`WARNING`/`ERROR`）、配置单条日志最大长度 `SpinBox`（默认 `2048` 字符，`0` 为不截断，支持非破坏性实时折叠/展开）、HookBus 捕获开关、引擎日志采集开关、GM 导入历史回显开关、清空缓冲与实时诊断摘要。
 - **悬浮终端窗口（`console_floating_window.tscn`）**：
-  - 优先经 `screen_host.mount_floating_panel(panel)` 挂载到桌面 `FloatingLayer/Panels`（自动阻断穿透点击并在 `LineEdit` 聚焦时让出快捷键），在无头测试环境回退 `SlotHelper.mount_node(screen_host, panel)`，并在 `_on_unregister()` 中同步移除并释放节点（`ObjectDB` 零泄漏）。
-  - 支持标题栏拖拽、关闭按钮、级别下拉筛选、关键字实时过滤、`RichTextLabel` 彩色日志渲染与本地诊断命令：`help`、`status`、`clear`、`level <debug|info|warning|error>`、`hooks`、`engine`、`imported`、`entities`。
+  - 因宿主 `FeatureManager._begin_optional_now()` 在可选模块 `_on_register()` 期间启用 `ctx._staged = true`（此时 `ctx.get_screen_host()` 依契约返回 `null`），模块通过 `ExtensionBase._defer_registered(&"_on_deferred_mount")` 推迟至暂存发布完成后自动挂载并默认显示（同时在 `set_console_visible(true)` 中保留按需挂载兜底）：优先经 `screen_host.mount_floating_panel(panel)` 挂载到桌面 `FloatingLayer/Panels`（自动阻断穿透点击并在 `LineEdit` 聚焦时让出快捷键），在无头测试环境回退 `SlotHelper.mount_node(screen_host, panel)`，并在 `_on_unregister()` 中同步移除并释放节点（`ObjectDB` 零泄漏）。
+  - 采用 macOS Terminal 深色高对比纯白字体与扁平控件覆写（隔离宿主 `"wood"` 复合主题级联），支持标题栏拖拽、关闭按钮、级别下拉筛选、关键字实时过滤、`RichTextLabel` 彩色日志渲染与本地诊断命令：`help`、`status`、`clear`、`level <debug|info|warning|error>`、`maxlen <0|64..16384>`、`hooks`、`engine`、`imported`、`entities`。
   - **可选宿主数据源**：通过 `HookHelper` 订阅常用世界 `HookIds` 与自定义 `mod.sdk_log_console.diagnostic`；通过 `context.consume_service("debug_hooks")` 读取内置计数器快照；通过安全探测 `/root/DevTools._engine_logger.capture()` 增量采集引擎日志（`LogBus` 配置 `emit_to_engine: false` 以避免自身日志形成反馈环）。
 
 ---

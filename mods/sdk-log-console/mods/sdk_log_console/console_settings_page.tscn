@@ -52,7 +52,7 @@ text = "切换控制台窗口"
 [node name="WindowNote" type="Label" parent="WindowPanel/VBox"]
 layout_mode = 2
 theme_type_variation = &"MutedLabel"
-text = "开启后可在桌面顶层拖动窗口、按级别筛选、搜索关键字或执行本地诊断命令（help / status / clear / level / hooks / engine / imported / entities）。"
+text = "开启后可在桌面顶层拖动窗口、按级别筛选、搜索关键字或执行本地诊断命令（help / status / clear / level / maxlen / hooks / engine / imported / entities）。"
 autowrap_mode = 3
 
 [node name="CapturePanel" type="PanelContainer" parent="."]
@@ -85,6 +85,26 @@ unique_name_in_owner = true
 custom_minimum_size = Vector2(140, 0)
 layout_mode = 2
 focus_mode = 0
+
+[node name="MaxCharsRow" type="HBoxContainer" parent="CapturePanel/VBox"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="MaxCharsLabel" type="Label" parent="CapturePanel/VBox/MaxCharsRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+text = "单条日志最大长度（0 = 不截断）"
+
+[node name="MaxCharsSpinBox" type="SpinBox" parent="CapturePanel/VBox/MaxCharsRow"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(156, 0)
+layout_mode = 2
+tooltip_text = "设为 0 表示不截断单条日志；调小可折叠超长 JSON 载荷（64 ~ 16384 字符）"
+max_value = 16384.0
+value = 2048.0
+rounded = true
+custom_arrow_step = 128.0
+suffix = " 字符"
 
 [node name="CaptureHooksCheck" type="CheckButton" parent="CapturePanel/VBox"]
 unique_name_in_owner = true

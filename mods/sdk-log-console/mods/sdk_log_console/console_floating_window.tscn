@@ -1,139 +1,351 @@
-[gd_scene load_steps=3 format=3]
+[gd_scene format=3]
 
 [ext_resource type="Script" path="res://mods/sdk_log_console/console_floating_window.gd" id="1_win"]
 
 [sub_resource type="StyleBoxFlat" id="StyleBoxFlat_terminal_bg"]
-bg_color = Color(0.06, 0.08, 0.11, 0.94)
+bg_color = Color(0.118, 0.118, 0.125, 0.97)
 border_width_left = 1
 border_width_top = 1
 border_width_right = 1
 border_width_bottom = 1
-border_color = Color(0.24, 0.44, 0.66, 0.92)
+border_color = Color(0.32, 0.32, 0.35, 0.96)
+corner_radius_top_left = 10
+corner_radius_top_right = 10
+corner_radius_bottom_right = 10
+corner_radius_bottom_left = 10
+shadow_color = Color(0, 0, 0, 0.48)
+shadow_size = 14
+shadow_offset = Vector2(0, 6)
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_header_bg"]
+bg_color = Color(0.2, 0.2, 0.216, 0.99)
+content_margin_left = 12.0
+content_margin_top = 7.0
+content_margin_right = 10.0
+content_margin_bottom = 7.0
+border_width_bottom = 1
+border_color = Color(0.27, 0.27, 0.3, 1)
+corner_radius_top_left = 9
+corner_radius_top_right = 9
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_log_bg"]
+bg_color = Color(0.078, 0.078, 0.086, 1)
+content_margin_left = 10.0
+content_margin_top = 8.0
+content_margin_right = 10.0
+content_margin_bottom = 8.0
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.22, 0.22, 0.25, 1)
 corner_radius_top_left = 6
 corner_radius_top_right = 6
 corner_radius_bottom_right = 6
 corner_radius_bottom_left = 6
 
-[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_header_bg"]
-bg_color = Color(0.10, 0.14, 0.20, 0.98)
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_btn_normal"]
+bg_color = Color(0.21, 0.21, 0.23, 1)
+content_margin_left = 10.0
+content_margin_top = 4.0
+content_margin_right = 10.0
+content_margin_bottom = 4.0
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.33, 0.33, 0.37, 1)
+corner_radius_top_left = 5
+corner_radius_top_right = 5
+corner_radius_bottom_right = 5
+corner_radius_bottom_left = 5
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_btn_hover"]
+bg_color = Color(0.27, 0.27, 0.3, 1)
+content_margin_left = 10.0
+content_margin_top = 4.0
+content_margin_right = 10.0
+content_margin_bottom = 4.0
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.44, 0.44, 0.49, 1)
+corner_radius_top_left = 5
+corner_radius_top_right = 5
+corner_radius_bottom_right = 5
+corner_radius_bottom_left = 5
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_btn_pressed"]
+bg_color = Color(0.15, 0.15, 0.17, 1)
+content_margin_left = 10.0
+content_margin_top = 4.0
+content_margin_right = 10.0
+content_margin_bottom = 4.0
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.39, 0.62, 1, 0.95)
+corner_radius_top_left = 5
+corner_radius_top_right = 5
+corner_radius_bottom_right = 5
+corner_radius_bottom_left = 5
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_close_hover"]
+bg_color = Color(0.92, 0.27, 0.23, 1)
+content_margin_left = 8.0
+content_margin_top = 2.0
+content_margin_right = 8.0
+content_margin_bottom = 2.0
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(1, 0.42, 0.38, 1)
+corner_radius_top_left = 5
+corner_radius_top_right = 5
+corner_radius_bottom_right = 5
+corner_radius_bottom_left = 5
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_input_normal"]
+bg_color = Color(0.09, 0.09, 0.1, 1)
 content_margin_left = 8.0
 content_margin_top = 4.0
 content_margin_right = 8.0
 content_margin_bottom = 4.0
-corner_radius_top_left = 4
-corner_radius_top_right = 4
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.28, 0.28, 0.32, 1)
+corner_radius_top_left = 5
+corner_radius_top_right = 5
+corner_radius_bottom_right = 5
+corner_radius_bottom_left = 5
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_input_focus"]
+bg_color = Color(0.09, 0.09, 0.1, 1)
+content_margin_left = 8.0
+content_margin_top = 4.0
+content_margin_right = 8.0
+content_margin_bottom = 4.0
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.35, 0.64, 1, 0.96)
+corner_radius_top_left = 5
+corner_radius_top_right = 5
+corner_radius_bottom_right = 5
+corner_radius_bottom_left = 5
 
 [node name="SdkLogConsoleWindow" type="PanelContainer"]
-visible = false
+visible = true
 custom_minimum_size = Vector2(680, 420)
-offset_left = 48.0
-offset_top = 72.0
-offset_right = 768.0
-offset_bottom = 520.0
+offset_left = 40.0
+offset_top = 60.0
+offset_right = 772.0
+offset_bottom = 556.0
 mouse_filter = 0
 theme_override_styles/panel = SubResource("StyleBoxFlat_terminal_bg")
 script = ExtResource("1_win")
 
-[node name="Margin" type="MarginContainer" parent="."]
+[node name="ShellVBox" type="VBoxContainer" parent="."]
 layout_mode = 2
-theme_override_constants/margin_left = 10
-theme_override_constants/margin_top = 8
-theme_override_constants/margin_right = 10
-theme_override_constants/margin_bottom = 10
+theme_override_constants/separation = 0
 
-[node name="RootVBox" type="VBoxContainer" parent="Margin"]
-layout_mode = 2
-theme_override_constants/separation = 6
-
-[node name="HeaderBar" type="PanelContainer" parent="Margin/RootVBox"]
+[node name="HeaderBar" type="PanelContainer" parent="ShellVBox"]
 unique_name_in_owner = true
 layout_mode = 2
 mouse_filter = 0
 mouse_default_cursor_shape = 13
 theme_override_styles/panel = SubResource("StyleBoxFlat_header_bg")
 
-[node name="HeaderHBox" type="HBoxContainer" parent="Margin/RootVBox/HeaderBar"]
+[node name="HeaderHBox" type="HBoxContainer" parent="ShellVBox/HeaderBar"]
 layout_mode = 2
 theme_override_constants/separation = 8
 
-[node name="TitleLabel" type="Label" parent="Margin/RootVBox/HeaderBar/HeaderHBox"]
+[node name="TrafficLights" type="HBoxContainer" parent="ShellVBox/HeaderBar/HeaderHBox"]
+layout_mode = 2
+mouse_filter = 2
+theme_override_constants/separation = 4
+
+[node name="DotRed" type="Label" parent="ShellVBox/HeaderBar/HeaderHBox/TrafficLights"]
+layout_mode = 2
+theme_override_colors/font_color = Color(1, 0.373, 0.341, 1)
+theme_override_font_sizes/font_size = 13
+text = "●"
+
+[node name="DotYellow" type="Label" parent="ShellVBox/HeaderBar/HeaderHBox/TrafficLights"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.996, 0.737, 0.18, 1)
+theme_override_font_sizes/font_size = 13
+text = "●"
+
+[node name="DotGreen" type="Label" parent="ShellVBox/HeaderBar/HeaderHBox/TrafficLights"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.157, 0.784, 0.251, 1)
+theme_override_font_sizes/font_size = 13
+text = "●"
+
+[node name="TitleLabel" type="Label" parent="ShellVBox/HeaderBar/HeaderHBox"]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
-text = "SDK LOG CONSOLE // LOCAL-ONLY"
+theme_override_colors/font_color = Color(0.96, 0.96, 0.97, 1)
+theme_override_font_sizes/font_size = 14
+text = "sdk_log_console — zsh (local-only)"
 
-[node name="StatsLabel" type="Label" parent="Margin/RootVBox/HeaderBar/HeaderHBox"]
+[node name="StatsLabel" type="Label" parent="ShellVBox/HeaderBar/HeaderHBox"]
 unique_name_in_owner = true
 layout_mode = 2
+theme_override_colors/font_color = Color(0.76, 0.76, 0.8, 1)
+theme_override_font_sizes/font_size = 13
 text = "0 / 0 entries"
 
-[node name="CloseButton" type="Button" parent="Margin/RootVBox/HeaderBar/HeaderHBox"]
+[node name="CloseButton" type="Button" parent="ShellVBox/HeaderBar/HeaderHBox"]
 unique_name_in_owner = true
 custom_minimum_size = Vector2(28, 24)
 layout_mode = 2
 focus_mode = 0
 mouse_default_cursor_shape = 2
 tooltip_text = "关闭悬浮控制台窗口"
-text = "X"
+theme_override_colors/font_color = Color(0.96, 0.96, 0.97, 1)
+theme_override_colors/font_focus_color = Color(0.96, 0.96, 0.97, 1)
+theme_override_colors/font_pressed_color = Color(1, 1, 1, 1)
+theme_override_colors/font_hover_color = Color(1, 1, 1, 1)
+theme_override_styles/normal = SubResource("StyleBoxFlat_btn_normal")
+theme_override_styles/pressed = SubResource("StyleBoxFlat_close_hover")
+theme_override_styles/hover = SubResource("StyleBoxFlat_close_hover")
+theme_override_styles/focus = SubResource("StyleBoxFlat_btn_normal")
+text = "×"
 
-[node name="FilterRow" type="HBoxContainer" parent="Margin/RootVBox"]
+[node name="BodyMargin" type="MarginContainer" parent="ShellVBox"]
+layout_mode = 2
+size_flags_vertical = 3
+theme_override_constants/margin_left = 10
+theme_override_constants/margin_top = 8
+theme_override_constants/margin_right = 10
+theme_override_constants/margin_bottom = 10
+
+[node name="RootVBox" type="VBoxContainer" parent="ShellVBox/BodyMargin"]
+layout_mode = 2
+theme_override_constants/separation = 7
+
+[node name="FilterRow" type="HBoxContainer" parent="ShellVBox/BodyMargin/RootVBox"]
 layout_mode = 2
 theme_override_constants/separation = 6
 
-[node name="LevelFilterOption" type="OptionButton" parent="Margin/RootVBox/FilterRow"]
+[node name="LevelFilterOption" type="OptionButton" parent="ShellVBox/BodyMargin/RootVBox/FilterRow"]
 unique_name_in_owner = true
-custom_minimum_size = Vector2(116, 0)
+custom_minimum_size = Vector2(112, 0)
 layout_mode = 2
 focus_mode = 0
+theme_override_colors/font_color = Color(0.96, 0.96, 0.97, 1)
+theme_override_colors/font_focus_color = Color(0.96, 0.96, 0.97, 1)
+theme_override_colors/font_pressed_color = Color(1, 1, 1, 1)
+theme_override_colors/font_hover_color = Color(1, 1, 1, 1)
+theme_override_colors/font_hover_pressed_color = Color(1, 1, 1, 1)
+theme_override_styles/normal = SubResource("StyleBoxFlat_btn_normal")
+theme_override_styles/pressed = SubResource("StyleBoxFlat_btn_pressed")
+theme_override_styles/hover = SubResource("StyleBoxFlat_btn_hover")
+theme_override_styles/focus = SubResource("StyleBoxFlat_btn_normal")
 
-[node name="SearchInput" type="LineEdit" parent="Margin/RootVBox/FilterRow"]
+[node name="SearchInput" type="LineEdit" parent="ShellVBox/BodyMargin/RootVBox/FilterRow"]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
+theme_override_colors/caret_color = Color(0.96, 0.96, 0.97, 1)
+theme_override_colors/font_placeholder_color = Color(0.62, 0.62, 0.67, 1)
+theme_override_colors/font_color = Color(0.98, 0.98, 0.99, 1)
+theme_override_colors/clear_button_color = Color(0.75, 0.75, 0.8, 1)
+theme_override_colors/clear_button_color_pressed = Color(1, 1, 1, 1)
+theme_override_styles/focus = SubResource("StyleBoxFlat_input_focus")
+theme_override_styles/normal = SubResource("StyleBoxFlat_input_normal")
 placeholder_text = "按来源或消息关键字过滤..."
 clear_button_enabled = true
 
-[node name="IngestButton" type="Button" parent="Margin/RootVBox/FilterRow"]
+[node name="IngestButton" type="Button" parent="ShellVBox/BodyMargin/RootVBox/FilterRow"]
 unique_name_in_owner = true
 layout_mode = 2
 focus_mode = 0
 mouse_default_cursor_shape = 2
+theme_override_colors/font_color = Color(0.96, 0.96, 0.97, 1)
+theme_override_colors/font_focus_color = Color(0.96, 0.96, 0.97, 1)
+theme_override_colors/font_pressed_color = Color(1, 1, 1, 1)
+theme_override_colors/font_hover_color = Color(1, 1, 1, 1)
+theme_override_styles/normal = SubResource("StyleBoxFlat_btn_normal")
+theme_override_styles/pressed = SubResource("StyleBoxFlat_btn_pressed")
+theme_override_styles/hover = SubResource("StyleBoxFlat_btn_hover")
+theme_override_styles/focus = SubResource("StyleBoxFlat_btn_normal")
 text = "采集"
 
-[node name="ClearButton" type="Button" parent="Margin/RootVBox/FilterRow"]
+[node name="ClearButton" type="Button" parent="ShellVBox/BodyMargin/RootVBox/FilterRow"]
 unique_name_in_owner = true
 layout_mode = 2
 focus_mode = 0
 mouse_default_cursor_shape = 2
+theme_override_colors/font_color = Color(0.96, 0.96, 0.97, 1)
+theme_override_colors/font_focus_color = Color(0.96, 0.96, 0.97, 1)
+theme_override_colors/font_pressed_color = Color(1, 1, 1, 1)
+theme_override_colors/font_hover_color = Color(1, 1, 1, 1)
+theme_override_styles/normal = SubResource("StyleBoxFlat_btn_normal")
+theme_override_styles/pressed = SubResource("StyleBoxFlat_btn_pressed")
+theme_override_styles/hover = SubResource("StyleBoxFlat_btn_hover")
+theme_override_styles/focus = SubResource("StyleBoxFlat_btn_normal")
 text = "清空"
 
-[node name="LogOutput" type="RichTextLabel" parent="Margin/RootVBox"]
+[node name="LogOutput" type="RichTextLabel" parent="ShellVBox/BodyMargin/RootVBox"]
 unique_name_in_owner = true
 custom_minimum_size = Vector2(0, 260)
 layout_mode = 2
 size_flags_vertical = 3
 focus_mode = 2
+theme_override_colors/default_color = Color(0.961, 0.961, 0.969, 1)
+theme_override_colors/font_selected_color = Color(1, 1, 1, 1)
+theme_override_colors/selection_color = Color(0.22, 0.46, 0.82, 0.65)
+theme_override_constants/line_separation = 3
+theme_override_font_sizes/normal_font_size = 14
+theme_override_styles/focus = SubResource("StyleBoxFlat_log_bg")
+theme_override_styles/normal = SubResource("StyleBoxFlat_log_bg")
 bbcode_enabled = true
 scroll_following = true
 selection_enabled = true
 
-[node name="CommandRow" type="HBoxContainer" parent="Margin/RootVBox"]
+[node name="CommandRow" type="HBoxContainer" parent="ShellVBox/BodyMargin/RootVBox"]
 layout_mode = 2
 theme_override_constants/separation = 6
 
-[node name="PromptLabel" type="Label" parent="Margin/RootVBox/CommandRow"]
+[node name="PromptLabel" type="Label" parent="ShellVBox/BodyMargin/RootVBox/CommandRow"]
+unique_name_in_owner = true
 layout_mode = 2
-text = ">"
+theme_override_colors/font_color = Color(0.196, 0.843, 0.294, 1)
+theme_override_font_sizes/font_size = 15
+text = "%"
 
-[node name="CommandInput" type="LineEdit" parent="Margin/RootVBox/CommandRow"]
+[node name="CommandInput" type="LineEdit" parent="ShellVBox/BodyMargin/RootVBox/CommandRow"]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
-placeholder_text = "输入诊断命令 (help, status, clear, level <lvl>, hooks, engine, imported, entities)..."
+theme_override_colors/caret_color = Color(0.196, 0.843, 0.294, 1)
+theme_override_colors/font_placeholder_color = Color(0.62, 0.62, 0.67, 1)
+theme_override_colors/font_color = Color(0.98, 0.98, 0.99, 1)
+theme_override_styles/focus = SubResource("StyleBoxFlat_input_focus")
+theme_override_styles/normal = SubResource("StyleBoxFlat_input_normal")
+placeholder_text = "输入诊断命令 (help, status, clear, level, maxlen, hooks, engine, imported, entities)..."
 
-[node name="RunCommandButton" type="Button" parent="Margin/RootVBox/CommandRow"]
+[node name="RunCommandButton" type="Button" parent="ShellVBox/BodyMargin/RootVBox/CommandRow"]
 unique_name_in_owner = true
 layout_mode = 2
 focus_mode = 0
 mouse_default_cursor_shape = 2
+theme_override_colors/font_color = Color(0.96, 0.96, 0.97, 1)
+theme_override_colors/font_focus_color = Color(0.96, 0.96, 0.97, 1)
+theme_override_colors/font_pressed_color = Color(1, 1, 1, 1)
+theme_override_colors/font_hover_color = Color(1, 1, 1, 1)
+theme_override_styles/normal = SubResource("StyleBoxFlat_btn_normal")
+theme_override_styles/pressed = SubResource("StyleBoxFlat_btn_pressed")
+theme_override_styles/hover = SubResource("StyleBoxFlat_btn_hover")
+theme_override_styles/focus = SubResource("StyleBoxFlat_btn_normal")
 text = "执行"
